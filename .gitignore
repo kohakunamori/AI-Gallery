@@ -1,0 +1,19 @@
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Sisyphus / OpenCode internal
+.sisyphus/
+skills/
+
+# Test images (keep example if needed)
+*.png
+!example.png
