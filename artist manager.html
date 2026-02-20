@@ -770,7 +770,11 @@
                         const legacyToMigrate = [];
                         for (const item of req.result) {
                             if (item.blob instanceof Blob) {
-                                out[item.id] = forExport ? await blobToDataUrl(item.blob) : URL.createObjectURL(item.blob);
+                                try {
+                                    out[item.id] = forExport ? await blobToDataUrl(item.blob) : URL.createObjectURL(item.blob);
+                                } catch (e) {
+                                    console.error("Failed to convert blob to data URL", e);
+                                }
                             } else if (item.base64Data) {
                                 out[item.id] = item.base64Data;
                                 legacyToMigrate.push({ id: item.id, base64Data: item.base64Data });
@@ -2128,19 +2132,24 @@
 
         // --- Import / Export ---
         window.handleExport = async () => {
-            const imageMap = await getAllImagesFromIDB({ forExport: true });
-            const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
-            const exportPayload = {
-                version: EXPORT_VERSION,
-                exportedAt: new Date().toISOString(),
-                categories: normalizeCategoryList(state.categories),
-                artists: fullData
-            };
-            const jsonStr = JSON.stringify(exportPayload, null, 2);
-            const blob = new Blob([jsonStr], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = `nai_artists_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-            showToast('数据已导出');
+            try {
+                const imageMap = await getAllImagesFromIDB({ forExport: true });
+                const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
+                const exportPayload = {
+                    version: EXPORT_VERSION,
+                    exportedAt: new Date().toISOString(),
+                    categories: normalizeCategoryList(state.categories),
+                    artists: fullData
+                };
+                const jsonStr = JSON.stringify(exportPayload, null, 2);
+                const blob = new Blob([jsonStr], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = `nai_artists_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                showToast('数据已导出');
+            } catch (e) {
+                console.error("Export failed", e);
+                showToast('导出失败: ' + e.message);
+            }
         };
         window.triggerImport = () => document.getElementById('import-file-input').click();
 
@@ -2437,6 +2446,43 @@
             updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory, isModalOpen: false, editingArtist: null });
         };
         window.closePreview = () => updateState({ previewImage: null });
+        window.handleCardAction = async (id, action, e) => {
+            e.stopPropagation();
+            const artist = state.liveArtists.find(a => a.id === id);
+            if (!artist) return;
+
+            if (action === 'preview') {
+                updateState({ previewImage: artist.imageUrl });
+            } else if (action === 'edit') {
+                state.formData = { ...artist };
+                state.comfyWorkflowData = null;
+                state.showComfyWorkflow = false;
+                updateState({ isModalOpen: true, editingArtist: artist });
+            } else if (action === 'delete') {
+                if (confirm(`确定要删除 "${artist.name}" 吗？`)) {
+                    await deleteImageFromIDB(id);
+                    const newArtists = state.liveArtists.filter(a => a.id !== id);
+                    const newSelected = { ...state.selectedArtists };
+                    delete newSelected[id];
+                    
+                    const mergedCategories = normalizeCategoryList([
+                        ...state.categories,
+                        ...buildKnownCategoriesFromArtists(newArtists)
+                    ]);
+                    const nextActiveCategory = state.activeCategory === 'all' || mergedCategories.includes(state.activeCategory)
+                        ? state.activeCategory
+                        : 'all';
+
+                    updateState({ 
+                        liveArtists: newArtists, 
+                        selectedArtists: newSelected,
+                        categories: mergedCategories,
+                        activeCategory: nextActiveCategory
+                    });
+                    showToast('已删除');
+                }
+            }
+        };
         window.viewNote = (id, e) => {
             e.stopPropagation();
             const artist = state.liveArtists.find(a => a.id === id);
