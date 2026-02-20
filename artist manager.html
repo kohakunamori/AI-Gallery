@@ -683,6 +683,23 @@
         body.theme-midnight { background: linear-gradient(135deg, #020617, #111827, #0f172a); color: #e2e8f0; }
         body.theme-sakura { background: linear-gradient(135deg, #fff1f2, #ffe4e6, #fecdd3); color: #881337; }
         body.theme-ocean { background: linear-gradient(135deg, #ecfeff, #cffafe, #a5f3fc); color: #164e63; }
+
+        /* Force dark mode text colors for form elements */
+        .dark input[type="text"],
+        .dark input[type="password"],
+        .dark input[type="number"],
+        .dark select,
+        .dark textarea {
+            color: #f1f5f9 !important;
+        }
+        .dark input::placeholder,
+        .dark textarea::placeholder {
+            color: #94a3b8 !important;
+        }
+        .dark select option {
+            background: #1e293b;
+            color: #e2e8f0;
+        }
     </style>
 </head>
 <body>
