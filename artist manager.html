@@ -655,11 +655,8 @@
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
-            position: sticky;
-            top: 6.5rem;
-            height: calc(100vh - 8rem);
+            position: relative;
             overflow: hidden;
-            align-self: flex-start;
             min-height: 0;
         }
         
@@ -1648,10 +1645,16 @@
         };
 
         // --- Global Actions ---
-        window.toggleThemeMenu = () => updateState({ showThemeMenu: !state.showThemeMenu });
+        window.toggleTheme = () => {
+            const currentTheme = state.theme;
+            const isDark = currentTheme === 'dark' || currentTheme === 'midnight';
+            const nextTheme = isDark ? 'light' : 'dark';
+            updateState({ theme: nextTheme });
+        };
         
         window.setTheme = (themeName) => {
             updateState({ theme: themeName, showThemeMenu: false });
+        };
         };
 
         window.openLayoutSettings = () => updateState({ isAISettingsOpen: true });
@@ -2661,13 +2664,10 @@
                                 <i data-lucide="settings" class="w-6 h-6 text-indigo-500"></i>
                             </button>
 
-                            <!-- Theme Toggle -->
-                            <div class="relative">
-                                <button onclick="toggleThemeMenu()" title="切换主题" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
-                                    <i data-lucide="palette" class="w-6 h-6 text-indigo-500"></i>
-                                </button>
-                                <div id="theme-menu" class="hidden"></div>
-                            </div>
+                            <!-- Theme Toggle -->\n                            <button onclick="toggleTheme()" title="切换深浅色" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
+                                <i data-lucide="sun" class="w-6 h-6 text-indigo-500 dark:hidden"></i>
+                                <i data-lucide="moon" class="w-6 h-6 text-indigo-400 hidden dark:block"></i>
+                            </button>
 
                             <div class="h-8 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
                             <button onclick="triggerImport()" title="导入 JSON" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-indigo-600 dark:text-indigo-400">
@@ -2715,7 +2715,7 @@
                 ${renderFilterBtn('favorite', '收藏', 'heart', false)}
                 <div class="border-l border-slate-300 dark:border-slate-600 mx-2 h-6 self-center"></div>
                 <button onclick="setActiveCategory('all')" class="hidden btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${state.activeCategory === 'all' ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md' : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50'}"><i data-lucide="layout-grid" class="w-4 h-4"></i><span>全部分类</span></button>
-                <button onclick="setActiveCategory('uncategorized')" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${state.activeCategory === 'uncategorized' ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md' : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50'}"><i data-lucide="folder-minus" class="w-4 h-4"></i><span>未分类</span></button>
+                <button onclick="setActiveCategory('uncategorized')" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${state.activeCategory === 'uncategorized' ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md' : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50'}"><i data-lucide="folder-minus" class="w-4 h-4"></i><span>默认分类</span></button>
                 ${state.categories.map((cat, index) => {
                     const chipToneClass = state.activeCategory === cat
                         ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md'
