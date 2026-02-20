@@ -393,6 +393,8 @@
             color: #cbd5e1 !important;
         }
         .dark body.liquid-glass .glass-modal .text-slate-600,
+        .dark body.liquid-glass .glass-modal .text-slate-700,
+        .dark body.liquid-glass .glass-modal .text-slate-800,
         .dark body.liquid-glass .glass-modal .text-slate-300 {
             color: #f1f5f9 !important;
         }
@@ -736,17 +738,33 @@
         const METADATA_EDITOR_PATH = 'C:/Users/gekdanhs/Downloads/AI-Image-Metadata-Editor.html';
 
         // 数据库操作封装
-        const openDB = () => new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-            request.onerror = () => reject('DB Error');
-            request.onsuccess = (e) => resolve(e.target.result);
-            request.onupgradeneeded = (e) => {
-                const db = e.target.result;
-                if (!db.objectStoreNames.contains(STORE_NAME)) {
-                    db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                }
-            };
-        });
+        let dbPromise = null;
+        const openDB = () => {
+            if (dbPromise) return dbPromise;
+            dbPromise = new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onerror = () => {
+                    dbPromise = null;
+                    reject('DB Error');
+                };
+                request.onsuccess = (e) => {
+                    const db = e.target.result;
+                    db.onclose = () => { dbPromise = null; };
+                    db.onversionchange = () => {
+                        try { db.close(); } catch (_) {}
+                        dbPromise = null;
+                    };
+                    resolve(db);
+                };
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                    }
+                };
+            });
+            return dbPromise;
+        };
 
         const dataUrlToBlob = async (dataUrl) => {
             const response = await fetch(dataUrl);
@@ -1342,7 +1360,7 @@
             return merged;
         };
 
-        const extractFieldsFromImageUrl = async (imageUrl, artistId = '') => {
+        const buildMetadataImageFile = async (imageUrl, artistId = '') => {
             if (!imageUrl) return null;
             let blob = null;
             try {
@@ -1353,9 +1371,20 @@
                 blob = await getImageBlobFromIDB(artistId);
             }
             if (!blob) return null;
-            const guessedType = blob.type || (String(imageUrl).includes('data:image/png') ? 'image/png' : String(imageUrl).includes('data:image/jpeg') ? 'image/jpeg' : String(imageUrl).includes('data:image/webp') ? 'image/webp' : 'image/png');
+            const guessedType = blob.type || (String(imageUrl).includes('data:image/png')
+                ? 'image/png'
+                : String(imageUrl).includes('data:image/jpeg')
+                    ? 'image/jpeg'
+                    : String(imageUrl).includes('data:image/webp')
+                        ? 'image/webp'
+                        : 'image/png');
             const ext = guessedType.includes('png') ? 'png' : guessedType.includes('jpeg') ? 'jpg' : guessedType.includes('webp') ? 'webp' : 'png';
-            const file = new File([blob], `artist-${artistId || 'image'}.${ext}`, { type: guessedType });
+            return new File([blob], `artist-${artistId || 'image'}.${ext}`, { type: guessedType });
+        };
+
+        const extractFieldsFromImageUrl = async (imageUrl, artistId = '') => {
+            const file = await buildMetadataImageFile(imageUrl, artistId);
+            if (!file) return null;
             const rawMetadata = await readRawMetadataFromFile(file);
             const extracted = normalizeRawMetadataToFields(rawMetadata);
             const hasAny = Object.values(extracted).some(v => String(v || '').trim());
@@ -1363,19 +1392,8 @@
         };
 
         const extractRawMetadataFromImageUrl = async (imageUrl, artistId = '') => {
-            if (!imageUrl) return null;
-            let blob = null;
-            try {
-                const response = await fetch(imageUrl);
-                blob = await response.blob();
-            } catch (_) {}
-            if (!blob && artistId) {
-                blob = await getImageBlobFromIDB(artistId);
-            }
-            if (!blob) return null;
-            const guessedType = blob.type || (String(imageUrl).includes('data:image/png') ? 'image/png' : String(imageUrl).includes('data:image/jpeg') ? 'image/jpeg' : String(imageUrl).includes('data:image/webp') ? 'image/webp' : 'image/png');
-            const ext = guessedType.includes('png') ? 'png' : guessedType.includes('jpeg') ? 'jpg' : guessedType.includes('webp') ? 'webp' : 'png';
-            const file = new File([blob], `artist-${artistId || 'image'}.${ext}`, { type: guessedType });
+            const file = await buildMetadataImageFile(imageUrl, artistId);
+            if (!file) return null;
             return await readRawMetadataFromFile(file);
         };
 
@@ -1536,6 +1554,12 @@
         ];
 
         const getDefaultDisplayConfig = () => ({ showCardInfo: false, blurNSFW: true, layoutPreset: 'balanced', gridCols: 4, tileSize: 'md', customCols: 4, customGap: 24, customAspect: '3/4', styleMode: 'default', backgroundImage: '' });
+
+        const resolveNextActiveCategory = (activeCategory, mergedCategories) => {
+            return (activeCategory === 'all' || activeCategory === 'uncategorized' || mergedCategories.includes(activeCategory))
+                ? activeCategory
+                : 'uncategorized';
+        };
 
         const normalizeCategoryName = (value) => String(value || '').trim();
         const escapeHtml = (value) => String(value || '')
@@ -1934,57 +1958,37 @@
             const newArtists = state.liveArtists.map(a => a.id === id ? { ...a, isFavorite: !a.isFavorite } : a);
             updateState({ liveArtists: newArtists });
         };
-        window.handleCardAction = (id, action, e) => {
-            e.stopPropagation(); 
-            if (action === 'delete') {
-                if (confirm('确定删除此画师吗？')) {
-                    deleteImageFromIDB(id).then(() => {
-                        const newArtists = state.liveArtists.filter(a => a.id !== id);
-                        const newSel = { ...state.selectedArtists };
-                        delete newSel[id];
-                        updateState({ liveArtists: newArtists, selectedArtists: newSel });
-                        showToast('已删除');
-                    });
-                }
-            } else if (action === 'edit') {
-                const artist = state.liveArtists.find(a => a.id === id);
-                if (artist) {
-                    state.formData = { ...artist }; 
-                    updateState({ isModalOpen: true, editingArtist: artist, previewImage: null });
-                }
-            } else if (action === 'preview') {
-                const artist = state.liveArtists.find(a => a.id === id);
-                if (artist) updateState({ previewImage: artist.imageUrl });
+        const copyTextToClipboard = async (text) => {
+            const content = String(text || '');
+            if (!content) return false;
+            if (navigator?.clipboard?.writeText) {
+                try {
+                    await navigator.clipboard.writeText(content);
+                    return true;
+                } catch (_) {}
             }
-        };
-        
-        // 修复：使用 execCommand 来兼容 iframe 环境
-        window.copyPrompts = () => {
-            const list = getSelectedList();
-            const text = list.map(a => a.weight === 1.0 ? a.tag : `(${a.tag}:${a.weight.toFixed(1)})`).join(', ');
-            
-            // 创建临时 textarea 进行复制
-            const textArea = document.createElement("textarea");
-            textArea.value = text;
-            // 确保元素不可见但存在
-            textArea.style.position = "fixed"; 
-            textArea.style.left = "-9999px";
+            const textArea = document.createElement('textarea');
+            textArea.value = content;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
             document.body.appendChild(textArea);
             textArea.focus();
             textArea.select();
-            
             try {
-                const successful = document.execCommand('copy');
-                if(successful) {
-                    showToast('已复制 Prompt');
-                } else {
-                    showToast('复制失败');
-                }
-            } catch (err) {
-                showToast('复制失败');
+                return document.execCommand('copy');
+            } catch (_) {
+                return false;
+            } finally {
+                if (document.body.contains(textArea)) document.body.removeChild(textArea);
             }
-            
-            document.body.removeChild(textArea);
+        };
+
+        window.copyPrompts = () => {
+            const list = getSelectedList();
+            const text = list.map(a => a.weight === 1.0 ? a.tag : `(${a.tag}:${a.weight.toFixed(1)})`).join(', ');
+            copyTextToClipboard(text).then((ok) => {
+                showToast(ok ? '已复制 Prompt' : '复制失败');
+            });
         };
 
         window.copyTag = (id, e) => {
@@ -2007,27 +2011,9 @@
                 return;
             }
 
-            // Original behavior: direct copy
-            const textArea = document.createElement("textarea");
-            textArea.value = artist.tag;
-            textArea.style.position = "fixed";
-            textArea.style.left = "-9999px";
-            document.body.appendChild(textArea);
-            textArea.focus();
-            textArea.select();
-
-            try {
-                const successful = document.execCommand('copy');
-                if(successful) {
-                    showToast(`已复制: ${artist.tag}`);
-                } else {
-                    showToast('复制失败');
-                }
-            } catch (err) {
-                showToast('复制失败');
-            }
-
-            document.body.removeChild(textArea);
+            copyTextToClipboard(artist.tag).then((ok) => {
+                showToast(ok ? `已复制: ${artist.tag}` : '复制失败');
+            });
         };
 
         window.closeTagSelector = () => updateState({ tagSelector: null });
@@ -2048,27 +2034,10 @@
                 showToast('内容为空，无法复制');
                 return;
             }
-            const textArea = document.createElement("textarea");
-            textArea.value = value;
-            textArea.style.position = "fixed";
-            textArea.style.left = "-9999px";
-            document.body.appendChild(textArea);
-            textArea.focus();
-            textArea.select();
-
-            try {
-                const successful = document.execCommand('copy');
-                if(successful) {
-        const labels = { tag: '图像Tag', styleTag: '画风Tag', characterTag: '角色Tag', clothingTag: '服装Tag', aiModel: '模型' };
-                    showToast(`已复制: ${labels[tagType] || tagType}`);
-                } else {
-                    showToast('复制失败');
-                }
-            } catch (err) {
-                showToast('复制失败');
-            }
-
-            document.body.removeChild(textArea);
+            copyTextToClipboard(value).then((ok) => {
+                const labels = { tag: '图像Tag', styleTag: '画风Tag', characterTag: '角色Tag', clothingTag: '服装Tag', aiModel: '模型' };
+                showToast(ok ? `已复制: ${labels[tagType] || tagType}` : '复制失败');
+            });
             updateState({ tagSelector: null });
         };
 
@@ -2335,9 +2304,7 @@
                         ...buildKnownCategoriesFromArtists(newArtists)
                     ]);
 
-            const nextActiveCategory = (state.activeCategory === 'all' || state.activeCategory === 'uncategorized' || mergedCategories.includes(state.activeCategory))
-                ? state.activeCategory
-                : 'uncategorized';
+                    const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
 
                     updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory });
                     if (addedCount > 0) {
@@ -2504,9 +2471,7 @@
                 ...state.categories,
                 ...buildKnownCategoriesFromArtists(newArtists)
             ]);
-            const nextActiveCategory = (state.activeCategory === 'all' || state.activeCategory === 'uncategorized' || mergedCategories.includes(state.activeCategory))
-                ? state.activeCategory
-                : 'uncategorized';
+            const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
 
             updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory, isModalOpen: false, editingArtist: null });
         };
@@ -2534,9 +2499,7 @@
                         ...state.categories,
                         ...buildKnownCategoriesFromArtists(newArtists)
                     ]);
-            const nextActiveCategory = (state.activeCategory === 'all' || state.activeCategory === 'uncategorized' || mergedCategories.includes(state.activeCategory))
-                ? state.activeCategory
-                : 'uncategorized';
+                    const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
 
                     updateState({ 
                         liveArtists: newArtists, 
@@ -2652,10 +2615,15 @@
         // =========================================
         // 5. Rendering
         // =========================================
-        const getSelectedList = () => Object.keys(state.selectedArtists).map(id => {
-            const a = state.liveArtists.find(x => x.id === id);
-            return a ? { ...a, weight: state.selectedArtists[id] } : null;
-        }).filter(Boolean);
+        const getSelectedList = () => {
+            const selectedIds = Object.keys(state.selectedArtists);
+            if (!selectedIds.length) return [];
+            const artistById = new Map(state.liveArtists.map((artist) => [artist.id, artist]));
+            return selectedIds.map((id) => {
+                const artist = artistById.get(id);
+                return artist ? { ...artist, weight: state.selectedArtists[id] } : null;
+            }).filter(Boolean);
+        };
 
         const renderApp = () => {
             const app = document.getElementById('app');
@@ -2794,17 +2762,15 @@
             container.style.gridTemplateColumns = `repeat(${layout.cols}, minmax(0, 1fr))`;
             container.style.gap = `${layout.gap}px`;
             clearHoverDetail();
-            let list = state.liveArtists.filter(a => 
-                a.name.toLowerCase().includes(state.searchQuery.toLowerCase()) || 
-                a.tag.toLowerCase().includes(state.searchQuery.toLowerCase())
-            );
-            if (state.activeCategory !== 'all') {
-                if (state.activeCategory === 'uncategorized') {
-                    list = list.filter(a => !a.category);
-                } else {
-                    list = list.filter(a => normalizeCategoryName(a.category) === state.activeCategory);
-                }
-            }
+            const query = String(state.searchQuery || '').toLowerCase();
+            const activeCategory = state.activeCategory;
+            let list = state.liveArtists.filter((artist) => {
+                const matchSearch = !query || artist.name.toLowerCase().includes(query) || artist.tag.toLowerCase().includes(query);
+                if (!matchSearch) return false;
+                if (activeCategory === 'all') return true;
+                if (activeCategory === 'uncategorized') return !artist.category;
+                return normalizeCategoryName(artist.category) === activeCategory;
+            });
             if (state.sortMode === 'favorite') list = list.filter(a => a.isFavorite);
             const sm = state.sortMode;
             if (sm === 'alpha-asc') list.sort((a,b) => a.name.localeCompare(b.name));
