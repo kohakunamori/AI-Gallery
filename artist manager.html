@@ -1,0 +1,3138 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="transition-colors duration-300">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI画廊</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+                    },
+                    transitionTimingFunction: {
+                        'ios': 'cubic-bezier(0.25, 0.1, 0.25, 1.0)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        :root {
+            --liquid-blur: 24px;
+            --liquid-surface-alpha: 0.48;
+            --liquid-border-light: rgba(255, 255, 255, 0.45);
+            --liquid-border-dark: rgba(255, 255, 255, 0.12);
+            --liquid-shadow-light: 0 24px 64px -24px rgba(15, 23, 42, 0.35);
+            --liquid-shadow-dark: 0 24px 64px -24px rgba(2, 6, 23, 0.85);
+            --liquid-button-alpha: 0.45;
+            --liquid-button-alpha-dark: 0.22;
+            
+            /* iOS 26 Final Release Specifics */
+            --liquid-specular-light: rgba(255, 255, 255, 0.7);
+            --liquid-specular-dark: rgba(255, 255, 255, 0.15);
+            --liquid-inner-glow: 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+            --liquid-refraction-scale: 40;
+            --liquid-noise-opacity: 0.04;
+            --liquid-tint-light: rgba(245, 245, 255, 0.12);
+            --liquid-tint-dark: rgba(100, 120, 255, 0.06);
+        }
+
+        /* 核心布局：允许页面自然延展并由页面滚动 */
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+        body {
+            background: linear-gradient(135deg, #e0e7ff, #f3e8ff, #fce7f3);
+            color: #1e293b;
+            position: relative;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+        .dark body {
+            background: linear-gradient(135deg, #0f172a, #1e1b4b, #312e81);
+            color: #f8fafc;
+        }
+
+        body.has-custom-bg::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            background:
+                radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.18), transparent 42%),
+                linear-gradient(150deg, rgba(2, 6, 23, 0.36) 0%, rgba(15, 23, 42, 0.56) 100%);
+        }
+
+        /* Background brightness adaptive text colors */
+        body.bg-dark.has-custom-bg {
+            color: #f1f5f9;
+        }
+        body.bg-dark.has-custom-bg .text-slate-800,
+        body.bg-dark.has-custom-bg .text-slate-700,
+        body.bg-dark.has-custom-bg .text-slate-600 {
+            color: #e2e8f0 !important;
+        }
+        body.bg-dark.has-custom-bg .text-slate-500,
+        body.bg-dark.has-custom-bg .text-slate-400 {
+            color: #cbd5e1 !important;
+        }
+        body.bg-dark.has-custom-bg h1,
+        body.bg-dark.has-custom-bg h2,
+        body.bg-dark.has-custom-bg h3 {
+            color: #ffffff;
+        }
+        body.bg-dark.has-custom-bg .glass-header {
+            color: #f1f5f9;
+        }
+        /* Light bg: ensure dark text for readability */
+        body.bg-light.has-custom-bg {
+            color: #1e293b;
+        }
+        body.bg-light.has-custom-bg .glass-header {
+            color: #1e293b;
+        }
+        /* Adjust overlay for dark backgrounds — lighter overlay to improve contrast */
+        body.bg-dark.has-custom-bg::before {
+            background:
+                radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.08), transparent 42%),
+                linear-gradient(150deg, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.40) 100%);
+        }
+        }
+
+        #app,
+        #modal-container,
+        #ai-settings-container,
+        #preview-modal-container,
+        #hover-detail-container,
+        #tag-selector-container,
+        #comfy-workflow-container {
+            position: relative;
+            z-index: 1;
+        }
+
+        #toast-container {
+            position: fixed;
+            left: 50%;
+            bottom: 1.25rem;
+            transform: translateX(-50%);
+            z-index: 100;
+            width: auto;
+            max-width: min(92vw, 560px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+            pointer-events: none;
+        }
+
+        #app {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: auto;
+            min-height: 100%;
+            overflow: visible;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* 美化滚动条 */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.4); border-radius: 999px; }
+        .dark .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(255, 255, 255, 0.2); }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+
+        /* 毛玻璃效果组件 */
+        .glass-header { background: rgba(255, 255, 255, 0.65); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(255, 255, 255, 0.5); }
+        .dark .glass-header { background: rgba(15, 23, 42, 0.65); border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+
+        .glass-sidebar { background: rgba(255, 255, 255, 0.75); backdrop-filter: blur(16px); border-left: 1px solid rgba(255, 255, 255, 0.5); border-radius: 1.5rem; }
+        .dark .glass-sidebar { background: rgba(15, 23, 42, 0.75); border-left: 1px solid rgba(255, 255, 255, 0.05); }
+
+        .glass-card { background: rgba(255, 255, 255, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.6); box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05); transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
+        .dark .glass-card { background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.3); }
+
+        .glass-modal { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.8); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15); }
+        .dark .glass-modal { background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
+
+        /* iOS 26 Final Release Liquid Glass Base */
+        body.liquid-glass .glass-header,
+        body.liquid-glass .glass-sidebar,
+        body.liquid-glass .glass-card,
+        body.liquid-glass .glass-modal {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            will-change: backdrop-filter, transform;
+            transition: all 0.3s cubic-bezier(0.25, 0.1, 0.25, 1.0);
+            position: relative;
+            z-index: 1;
+        }
+        /* Buttons: remove border/shadow but keep background for visibility */
+        body.liquid-glass .liquid-action,
+        body.liquid-glass .liquid-action-tint {
+            border: none !important;
+            box-shadow: none !important;
+            will-change: backdrop-filter, transform;
+            transition: all 0.3s cubic-bezier(0.25, 0.1, 0.25, 1.0);
+        }
+        /* Non-absolute buttons: make bg transparent so glass pseudo-elements show through */
+        /* Only target header toolbar buttons, not card overlay buttons */
+        body.liquid-glass .glass-header .liquid-action {
+            background: transparent !important;
+        }
+        /* Only set position:relative on buttons that aren't already positioned */
+        body.liquid-glass .liquid-action:not([class*="absolute"]):not([class*="fixed"]):not([class*="sticky"]),
+        body.liquid-glass .liquid-action-tint:not([class*="absolute"]):not([class*="fixed"]):not([class*="sticky"]) {
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Base blur and saturation layer */
+        body.liquid-glass .glass-header::before,
+        body.liquid-glass .glass-sidebar::before,
+        body.liquid-glass .glass-card::before,
+        body.liquid-glass .glass-modal::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            z-index: -2;
+            backdrop-filter: blur(var(--liquid-blur)) saturate(180%) contrast(1.02);
+            -webkit-backdrop-filter: blur(var(--liquid-blur)) saturate(180%) contrast(1.02);
+            border-radius: inherit;
+            filter: url(#liquid-glass-distortion);
+            contain: layout style;
+        }
+        /* Buttons get blur but NO SVG distortion (too small for displacement map) */
+        /* Exclude absolute-positioned buttons (close/favorite icons) from pseudo-element glass */
+        body.liquid-glass .liquid-action:not([class*="absolute"])::before,
+        body.liquid-glass .liquid-action-tint:not([class*="absolute"])::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            z-index: -2;
+            backdrop-filter: blur(calc(var(--liquid-blur) * 0.6)) saturate(160%);
+            -webkit-backdrop-filter: blur(calc(var(--liquid-blur) * 0.6)) saturate(160%);
+            border-radius: inherit;
+            contain: layout style;
+        }
+
+        /* Tint, material, and specular highlight layer */
+        body.liquid-glass .glass-header::after,
+        body.liquid-glass .glass-sidebar::after,
+        body.liquid-glass .glass-card::after,
+        body.liquid-glass .glass-modal::after,
+        body.liquid-glass .liquid-action:not([class*="absolute"])::after,
+        body.liquid-glass .liquid-action-tint:not([class*="absolute"])::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            z-index: -1;
+            border-radius: inherit;
+            background: linear-gradient(160deg, rgba(255, 255, 255, var(--liquid-surface-alpha)), rgba(255, 255, 255, calc(var(--liquid-surface-alpha) * 0.3)));
+            box-shadow: 
+                inset 0 1px 0 0 var(--liquid-specular-light),
+                inset 0 0 0 1px var(--liquid-border-light),
+                var(--liquid-shadow-light);
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
+            transition: all 0.3s cubic-bezier(0.25, 0.1, 0.25, 1.0);
+            pointer-events: none;
+        }
+
+        /* Dark Mode Adjustments */
+        .dark body.liquid-glass .glass-header::after,
+        .dark body.liquid-glass .glass-sidebar::after,
+        .dark body.liquid-glass .glass-card::after,
+        .dark body.liquid-glass .glass-modal::after,
+        .dark body.liquid-glass .liquid-action:not([class*="absolute"])::after,
+        .dark body.liquid-glass .liquid-action-tint:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(15, 23, 42, var(--liquid-surface-alpha)), rgba(15, 23, 42, calc(var(--liquid-surface-alpha) * 0.5)));
+            background-color: var(--liquid-tint-dark);
+            box-shadow: 
+                inset 0 1px 0 0 var(--liquid-specular-dark),
+                inset 0 0 0 1px var(--liquid-border-dark),
+                var(--liquid-shadow-dark);
+        }
+
+        /* Component Specific Adjustments */
+        body.liquid-glass .glass-header { border-radius: 0; }
+        body.liquid-glass .glass-sidebar { border-radius: 28px; }
+        body.liquid-glass .glass-card { border-radius: 20px; }
+        body.liquid-glass .glass-modal { border-radius: 28px; }
+
+        /* Filter chips and settings panels: lightweight glass */
+        body.liquid-glass #filters-container .glass-card,
+        body.liquid-glass .glass-modal .glass-card {
+            background: rgba(255, 255, 255, 0.4) !important;
+            border: 1px solid rgba(255, 255, 255, 0.45) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.5), 0 2px 8px -2px rgba(0, 0, 0, 0.06) !important;
+            backdrop-filter: blur(14px) saturate(150%);
+            -webkit-backdrop-filter: blur(14px) saturate(150%);
+        }
+        .dark body.liquid-glass #filters-container .glass-card,
+        .dark body.liquid-glass .glass-modal .glass-card {
+            background: rgba(15, 23, 42, 0.45) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06), 0 2px 8px -2px rgba(0, 0, 0, 0.2) !important;
+        }
+        body.liquid-glass #filters-container .glass-card::before,
+        body.liquid-glass #filters-container .glass-card::after,
+        body.liquid-glass .glass-modal .glass-card::before,
+        body.liquid-glass .glass-modal .glass-card::after {
+            content: none !important;
+        }
+
+        /* Liquid Glass form elements (inputs, selects, textareas) */
+        body.liquid-glass .glass-modal input[type="text"],
+        body.liquid-glass .glass-modal input[type="password"],
+        body.liquid-glass .glass-modal input[type="number"],
+        body.liquid-glass .glass-modal select,
+        body.liquid-glass .glass-modal textarea {
+            background: rgba(255, 255, 255, 0.35) !important;
+            backdrop-filter: blur(10px) saturate(140%);
+            -webkit-backdrop-filter: blur(10px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, 0.45) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.06);
+            color: #0f172a !important;
+            transition: all 0.25s ease;
+        }
+        body.liquid-glass .glass-modal input[type="text"]:focus,
+        body.liquid-glass .glass-modal input[type="password"]:focus,
+        body.liquid-glass .glass-modal input[type="number"]:focus,
+        body.liquid-glass .glass-modal select:focus,
+        body.liquid-glass .glass-modal textarea:focus {
+            background: rgba(255, 255, 255, 0.5) !important;
+            border-color: rgba(99, 102, 241, 0.5) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.6), 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+        body.liquid-glass .glass-modal input::placeholder,
+        body.liquid-glass .glass-modal textarea::placeholder {
+            color: rgba(71, 85, 105, 0.8) !important;
+        }
+        /* Select option dropdown (native) */
+        body.liquid-glass .glass-modal select option {
+            background: rgba(255, 255, 255, 0.95);
+            color: #1e293b;
+            padding: 8px 12px;
+        }
+        /* Dark mode form elements */
+        .dark body.liquid-glass .glass-modal input[type="text"],
+        .dark body.liquid-glass .glass-modal input[type="password"],
+        .dark body.liquid-glass .glass-modal input[type="number"],
+        .dark body.liquid-glass .glass-modal select,
+        .dark body.liquid-glass .glass-modal textarea {
+            background: rgba(15, 23, 42, 0.45) !important;
+            border: 1px solid rgba(255, 255, 255, 0.12) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08), 0 2px 6px -2px rgba(0, 0, 0, 0.2);
+            color: #f1f5f9 !important;
+        }
+        .dark body.liquid-glass .glass-modal input[type="text"]:focus,
+        .dark body.liquid-glass .glass-modal input[type="password"]:focus,
+        .dark body.liquid-glass .glass-modal input[type="number"]:focus,
+        .dark body.liquid-glass .glass-modal select:focus,
+        .dark body.liquid-glass .glass-modal textarea:focus {
+            background: rgba(15, 23, 42, 0.6) !important;
+            border-color: rgba(99, 102, 241, 0.4) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.1), 0 0 0 3px rgba(99, 102, 241, 0.2);
+        }
+        .dark body.liquid-glass .glass-modal input::placeholder,
+        .dark body.liquid-glass .glass-modal textarea::placeholder {
+            color: rgba(148, 163, 184, 0.7) !important;
+        }
+        .dark body.liquid-glass .glass-modal select option {
+            background: #1e293b;
+            color: #e2e8f0;
+        }
+        /* Text visibility boost in glass modals */
+        body.liquid-glass .glass-modal label,
+        body.liquid-glass .glass-modal span,
+        body.liquid-glass .glass-modal p,
+        body.liquid-glass .glass-modal h2,
+        body.liquid-glass .glass-modal h3 {
+            text-shadow: 0 1px 3px rgba(255, 255, 255, 0.6);
+        }
+        body.liquid-glass .glass-modal .text-slate-400 {
+            color: #334155 !important;
+        }
+        body.liquid-glass .glass-modal .text-slate-500 {
+            color: #475569 !important;
+        }
+        body.liquid-glass .glass-modal .text-slate-600,
+        body.liquid-glass .glass-modal .text-slate-700,
+        body.liquid-glass .glass-modal .text-slate-800 {
+            color: #0f172a !important;
+        }
+        body.liquid-glass .glass-modal .text-indigo-600 {
+            color: #4338ca !important;
+        }
+        .dark body.liquid-glass .glass-modal label,
+        .dark body.liquid-glass .glass-modal span,
+        .dark body.liquid-glass .glass-modal p,
+        .dark body.liquid-glass .glass-modal h2,
+        .dark body.liquid-glass .glass-modal h3 {
+            text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+        }
+        .dark body.liquid-glass .glass-modal .text-slate-400 {
+            color: #e2e8f0 !important;
+        }
+        .dark body.liquid-glass .glass-modal .text-slate-500 {
+            color: #cbd5e1 !important;
+        }
+        .dark body.liquid-glass .glass-modal .text-slate-600,
+        .dark body.liquid-glass .glass-modal .text-slate-300 {
+            color: #f1f5f9 !important;
+        }
+        .dark body.liquid-glass .glass-modal .text-indigo-600,
+        .dark body.liquid-glass .glass-modal .text-indigo-400 {
+            color: #a5b4fc !important;
+        }
+        /* Buttons inside glass modals (移除, 上传背景图, etc.) */
+        body.liquid-glass .glass-modal .liquid-action,
+        body.liquid-glass .glass-modal button[class*="bg-slate-100"],
+        body.liquid-glass .glass-modal button[class*="bg-white"] {
+            background: rgba(255, 255, 255, 0.35) !important;
+            backdrop-filter: blur(8px) saturate(140%);
+            -webkit-backdrop-filter: blur(8px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, 0.4) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.4);
+            color: #334155 !important;
+        }
+        .dark body.liquid-glass .glass-modal .liquid-action,
+        .dark body.liquid-glass .glass-modal button[class*="bg-slate-100"],
+        .dark body.liquid-glass .glass-modal button[class*="bg-white"] {
+            background: rgba(15, 23, 42, 0.4) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+            color: #cbd5e1 !important;
+        }
+        /* Upload label */
+        body.liquid-glass .glass-modal label[for="display-bg-upload"] {
+            background: rgba(255, 255, 255, 0.35) !important;
+            backdrop-filter: blur(8px) saturate(140%);
+            -webkit-backdrop-filter: blur(8px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, 0.4) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.4);
+            color: #334155 !important;
+        }
+        .dark body.liquid-glass .glass-modal label[for="display-bg-upload"] {
+            background: rgba(15, 23, 42, 0.4) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+            color: #cbd5e1 !important;
+        }
+        /* NSFW checkbox container */
+        body.liquid-glass .glass-modal label[class*="bg-slate-50"] {
+            background: rgba(255, 255, 255, 0.3) !important;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.4) !important;
+        }
+        .dark body.liquid-glass .glass-modal label[class*="bg-slate-50"] {
+            background: rgba(15, 23, 42, 0.35) !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        }
+        /* Divider lines in glass modals */
+        body.liquid-glass .glass-modal .h-px {
+            background: rgba(255, 255, 255, 0.3) !important;
+        }
+        .dark body.liquid-glass .glass-modal .h-px {
+            background: rgba(255, 255, 255, 0.08) !important;
+        }
+        /* Small text labels visibility */
+        body.liquid-glass .glass-modal .text-\[11px\],
+        body.liquid-glass .glass-modal .text-\[10px\] {
+            color: #475569 !important;
+        }
+        .dark body.liquid-glass .glass-modal .text-\[11px\],
+        .dark body.liquid-glass .glass-modal .text-\[10px\] {
+            color: #94a3b8 !important;
+        }
+        /* Header search input glass */
+        body.liquid-glass .glass-header input[type="text"] {
+            background: rgba(255, 255, 255, 0.38) !important;
+            backdrop-filter: blur(10px) saturate(140%);
+            -webkit-backdrop-filter: blur(10px) saturate(140%);
+            border: 1px solid rgba(255, 255, 255, 0.4) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.4);
+            color: #0f172a !important;
+        }
+        body.liquid-glass .glass-header input[type="text"]::placeholder {
+            color: rgba(51, 65, 85, 0.7) !important;
+        }
+        .dark body.liquid-glass .glass-header input[type="text"] {
+            background: rgba(15, 23, 42, 0.45) !important;
+            border: 1px solid rgba(255, 255, 255, 0.12) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+            color: #f1f5f9 !important;
+        }
+        .dark body.liquid-glass .glass-header input[type="text"]::placeholder {
+            color: rgba(148, 163, 184, 0.7) !important;
+        }
+
+        /* Header specific */
+        body.liquid-glass .glass-header::after {
+            box-shadow: 
+                inset 0 -1px 0 0 var(--liquid-border-light),
+                var(--liquid-shadow-light);
+        }
+        .dark body.liquid-glass .glass-header::after {
+            box-shadow: 
+                inset 0 -1px 0 0 var(--liquid-border-dark),
+                var(--liquid-shadow-dark);
+        }
+
+        /* Sidebar specific */
+        body.liquid-glass .glass-sidebar::after {
+            box-shadow: 
+                inset 1px 0 0 0 var(--liquid-specular-light),
+                inset 1px 0 0 0 var(--liquid-border-light),
+                var(--liquid-shadow-light);
+        }
+        .dark body.liquid-glass .glass-sidebar::after {
+            box-shadow: 
+                inset 1px 0 0 0 var(--liquid-specular-dark),
+                inset 1px 0 0 0 var(--liquid-border-dark),
+                var(--liquid-shadow-dark);
+        }
+
+        /* Card Hover Effects — only for artist grid cards, not settings panels */
+        body.liquid-glass .glass-card.artist-card:hover {
+            transform: scale(1.015) translateY(-2px);
+        }
+        body.liquid-glass .glass-card.artist-card:hover::before {
+            backdrop-filter: blur(calc(var(--liquid-blur) + 4px)) saturate(190%) contrast(1.05);
+            -webkit-backdrop-filter: blur(calc(var(--liquid-blur) + 4px)) saturate(190%) contrast(1.05);
+        }
+        body.liquid-glass .glass-card.artist-card:hover::after {
+            box-shadow: 
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.9),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.6),
+                0 30px 60px -20px rgba(15, 23, 42, 0.45);
+            background: linear-gradient(160deg, rgba(255, 255, 255, calc(var(--liquid-surface-alpha) + 0.1)), rgba(255, 255, 255, calc(var(--liquid-surface-alpha) * 0.4)));
+            animation: liquid-shimmer 8s linear infinite;
+        }
+        .dark body.liquid-glass .glass-card.artist-card:hover::after {
+            box-shadow: 
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.3),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.25),
+                0 30px 60px -20px rgba(2, 6, 23, 0.95);
+            background: linear-gradient(160deg, rgba(30, 41, 59, calc(var(--liquid-surface-alpha) + 0.1)), rgba(15, 23, 42, calc(var(--liquid-surface-alpha) * 0.6)));
+        }
+
+        /* Card overlay icon buttons — Liquid Glass treatment */
+        body.liquid-glass .artist-card .liquid-action:not([class*="absolute"]) {
+            background: transparent !important;
+            position: relative;
+            z-index: 1;
+        }
+        body.liquid-glass .artist-card .liquid-action:not([class*="absolute"])::before {
+            backdrop-filter: blur(18px) saturate(180%) !important;
+            -webkit-backdrop-filter: blur(18px) saturate(180%) !important;
+        }
+        body.liquid-glass .artist-card .liquid-action:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.25)) !important;
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.5),
+                0 8px 24px -8px rgba(15, 23, 42, 0.3) !important;
+        }
+        .dark body.liquid-glass .artist-card .liquid-action:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(15, 23, 42, 0.55), rgba(15, 23, 42, 0.3)) !important;
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+                0 8px 24px -8px rgba(2, 6, 23, 0.7) !important;
+        }
+        body.liquid-glass .artist-card .liquid-action:not([class*="absolute"]):hover::after {
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.95),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+                0 12px 32px -10px rgba(15, 23, 42, 0.4) !important;
+        }
+        /* Card overlay icon colors — ensure visibility on glass */
+        body.liquid-glass .artist-card .liquid-action .lucide,
+        body.liquid-glass .artist-card .liquid-action i {
+            filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.15));
+        }
+        /* Favorite button (absolute positioned) — glass background instead of pseudo-elements */
+        body.liquid-glass .artist-card .liquid-action[class*="absolute"] {
+            backdrop-filter: blur(18px) saturate(180%);
+            -webkit-backdrop-filter: blur(18px) saturate(180%);
+            background: rgba(255, 255, 255, 0.45) !important;
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.6),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.4),
+                0 6px 16px -6px rgba(15, 23, 42, 0.25);
+            border: none !important;
+        }
+        .dark body.liquid-glass .artist-card .liquid-action[class*="absolute"] {
+            background: rgba(15, 23, 42, 0.5) !important;
+            box-shadow:
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.12),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+                0 6px 16px -6px rgba(2, 6, 23, 0.6);
+        }
+
+        /* Action Buttons */
+        body.liquid-glass .liquid-action:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(255, 255, 255, var(--liquid-button-alpha)), rgba(255, 255, 255, calc(var(--liquid-button-alpha) * 0.5)));
+        }
+        body.liquid-glass .liquid-action-tint:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.05));
+        }
+        .dark body.liquid-glass .liquid-action:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(15, 23, 42, var(--liquid-button-alpha-dark)), rgba(15, 23, 42, calc(var(--liquid-button-alpha-dark) * 0.5)));
+        }
+        .dark body.liquid-glass .liquid-action-tint:not([class*="absolute"])::after {
+            background: linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
+        }
+
+        body.liquid-glass .liquid-action:not([class*="absolute"]):hover::after,
+        body.liquid-glass .liquid-action-tint:not([class*="absolute"]):hover::after {
+            box-shadow: 
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.8),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.6),
+                0 16px 32px -16px rgba(15, 23, 42, 0.5);
+        }
+        .dark body.liquid-glass .liquid-action:not([class*="absolute"]):hover::after,
+        .dark body.liquid-glass .liquid-action-tint:not([class*="absolute"]):hover::after {
+            box-shadow: 
+                inset 0 1px 0 0 rgba(255, 255, 255, 0.25),
+                inset 0 0 0 1px rgba(255, 255, 255, 0.2),
+                0 16px 32px -16px rgba(2, 6, 23, 0.9);
+        }
+
+        /* Animations */
+        @keyframes liquid-shimmer {
+            0% { background-position: 200% center; }
+            100% { background-position: -200% center; }
+        }
+        
+        /* Accessibility */
+        @media (prefers-reduced-transparency: reduce) {
+            body.liquid-glass .glass-header::before,
+            body.liquid-glass .glass-sidebar::before,
+            body.liquid-glass .glass-card::before,
+            body.liquid-glass .glass-modal::before,
+            body.liquid-glass .liquid-action:not([class*="absolute"])::before,
+            body.liquid-glass .liquid-action-tint:not([class*="absolute"])::before {
+                backdrop-filter: none !important;
+                -webkit-backdrop-filter: none !important;
+                background: rgba(255, 255, 255, 0.95) !important;
+            }
+            .dark body.liquid-glass .glass-header::before,
+            .dark body.liquid-glass .glass-sidebar::before,
+            .dark body.liquid-glass .glass-card::before,
+            .dark body.liquid-glass .glass-modal::before,
+            .dark body.liquid-glass .liquid-action:not([class*="absolute"])::before,
+            .dark body.liquid-glass .liquid-action-tint:not([class*="absolute"])::before {
+                background: rgba(15, 23, 42, 0.95) !important;
+            }
+        }
+        
+        .animate-fade-in { animation: fadeIn 0.2s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: scale(1); } }
+
+        /* 布局系统 */
+        .app-layout { display: flex; flex-grow: 1; overflow: visible; padding: 1.5rem; gap: 1.5rem; }
+        .golden-ratio-main { flex: 1; min-width: 400px; overflow: visible; }
+        .sidebar-container {
+            width: 360px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            position: sticky;
+            top: 6.5rem;
+            height: calc(100vh - 8rem);
+            overflow: hidden;
+            align-self: flex-start;
+            min-height: 0;
+        }
+        
+        .btn-icon { transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1.0); }
+        .btn-icon:active { transform: scale(0.92); }
+
+        @media (max-width: 1024px) {
+            .app-layout { padding: 1rem; gap: 1rem; }
+            .sidebar-container {
+                width: 300px;
+                top: 6rem;
+                height: calc(100vh - 7rem);
+            }
+        }
+        @media (max-width: 768px) { 
+            .app-layout { padding: 0.5rem; display: block; }
+            .sidebar-container { display: none; } 
+        }
+
+        /* === 主题样式 === */
+        body { transition: background 0.5s ease, color 0.3s ease; }
+        body.theme-light { background: linear-gradient(135deg, #e0e7ff, #f3e8ff, #fce7f3); color: #1e293b; }
+        body.theme-dark { background: linear-gradient(135deg, #0f172a, #1e1b4b, #312e81); color: #f8fafc; }
+        body.theme-midnight { background: linear-gradient(135deg, #020617, #111827, #0f172a); color: #e2e8f0; }
+        body.theme-sakura { background: linear-gradient(135deg, #fff1f2, #ffe4e6, #fecdd3); color: #881337; }
+        body.theme-ocean { background: linear-gradient(135deg, #ecfeff, #cffafe, #a5f3fc); color: #164e63; }
+    </style>
+</head>
+<body>
+    <svg width="0" height="0" aria-hidden="true" style="position:absolute;pointer-events:none;">
+        <filter id="liquid-glass-distortion" x="-10%" y="-10%" width="120%" height="120%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.006 0.006" numOctaves="2" seed="92" result="noise"/>
+            <feGaussianBlur in="noise" stdDeviation="2" result="blurred"/>
+            <feDisplacementMap in="SourceGraphic" in2="blurred" scale="40" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
+    </svg>
+
+    <div id="app" class="w-full h-full transition-colors duration-300"></div>
+    <div id="modal-container"></div>
+    <div id="ai-settings-container"></div>
+    <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]"></div>
+    <div id="preview-modal-container"></div>
+    <div id="hover-detail-container"></div>
+    <div id="tag-selector-container"></div>
+    <div id="comfy-workflow-container"></div>
+    
+    <script>
+        // =========================================
+        // 1. 数据存储层 (IndexedDB for Images)
+        // =========================================
+        const DB_NAME = 'NAIArtistDB';
+        const STORE_NAME = 'images';
+        const DB_VERSION = 2;
+        const METADATA_KEY = 'nai-artists-metadata'; 
+        const CATEGORY_KEY = 'nai-artists-categories';
+        const THEME_KEY = 'nai-theme-preference';
+        const AI_CONFIG_KEY = 'nai-ai-config';
+        const DISPLAY_CONFIG_KEY = 'nai-display-config';
+        const EXPORT_VERSION = 2;
+        const METADATA_EDITOR_PATH = 'C:/Users/gekdanhs/Downloads/AI-Image-Metadata-Editor.html';
+
+        // 数据库操作封装
+        const openDB = () => new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME, DB_VERSION);
+            request.onerror = () => reject('DB Error');
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_NAME)) {
+                    db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+                }
+            };
+        });
+
+        const dataUrlToBlob = async (dataUrl) => {
+            const response = await fetch(dataUrl);
+            return await response.blob();
+        };
+
+        const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+
+        const saveImageToIDB = async (id, imageData) => {
+            try {
+                const blob = typeof imageData === 'string' ? await dataUrlToBlob(imageData) : imageData;
+                const db = await openDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction([STORE_NAME], 'readwrite');
+                    const req = tx.objectStore(STORE_NAME).put({ id, blob });
+                    req.onsuccess = () => resolve();
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) { console.error("IDB Save Error", e); }
+        };
+
+        const getAllImagesFromIDB = async ({ forExport = false } = {}) => {
+            try {
+                const db = await openDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction([STORE_NAME], 'readonly');
+                    const req = tx.objectStore(STORE_NAME).getAll();
+                    req.onsuccess = async () => {
+                        const out = {};
+                        const legacyToMigrate = [];
+                        for (const item of req.result) {
+                            if (item.blob instanceof Blob) {
+                                out[item.id] = forExport ? await blobToDataUrl(item.blob) : URL.createObjectURL(item.blob);
+                            } else if (item.base64Data) {
+                                out[item.id] = item.base64Data;
+                                legacyToMigrate.push({ id: item.id, base64Data: item.base64Data });
+                            }
+                        }
+                        if (legacyToMigrate.length) {
+                            Promise.allSettled(legacyToMigrate.map(async (entry) => {
+                                const migratedBlob = await dataUrlToBlob(entry.base64Data);
+                                await saveImageToIDB(entry.id, migratedBlob);
+                            }));
+                        }
+                        resolve(out);
+                    };
+                    req.onerror = () => resolve({});
+                });
+            } catch (e) { return {}; }
+        };
+
+        const deleteImageFromIDB = async (id) => {
+            try {
+                const db = await openDB();
+                return new Promise((resolve) => {
+                    const tx = db.transaction([STORE_NAME], 'readwrite');
+                    tx.objectStore(STORE_NAME).delete(id);
+                    tx.oncomplete = () => resolve();
+                });
+            } catch (e) { console.error("IDB Delete Error", e); }
+        };
+
+        const getImageBlobFromIDB = async (id) => {
+            try {
+                const db = await openDB();
+                return new Promise((resolve) => {
+                    const tx = db.transaction([STORE_NAME], 'readonly');
+                    const req = tx.objectStore(STORE_NAME).get(id);
+                    req.onsuccess = async () => {
+                        const item = req.result;
+                        if (!item) return resolve(null);
+                        if (item.blob instanceof Blob) return resolve(item.blob);
+                        if (item.base64Data) {
+                            try { return resolve(await dataUrlToBlob(item.base64Data)); } catch (_) { return resolve(null); }
+                        }
+                        resolve(null);
+                    };
+                    req.onerror = () => resolve(null);
+                });
+            } catch (_) {
+                return null;
+            }
+        };
+
+        // =========================================
+        // 2. Utilities & Theme
+        // =========================================
+        const showToast = (message) => {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const el = document.createElement('div');
+            el.className = "bg-slate-800/90 dark:bg-white/90 backdrop-blur-md text-white dark:text-slate-900 px-5 py-2.5 rounded-full shadow-xl animate-fade-in font-medium text-sm flex items-center gap-2 w-fit max-w-[90vw] text-center";
+            el.innerHTML = `<i data-lucide="${message.includes('复制') ? 'copy' : 'check-circle'}" class="w-4 h-4"></i> ${message}`;
+            container.appendChild(el);
+            lucide.createIcons(el);
+            setTimeout(() => { if (container.contains(el)) container.removeChild(el); }, 2500);
+        };
+
+        const readImageAsBase64 = (file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(e.target.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+
+        const getImageTypeFromBinarySignature = (file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                const bytes = new Uint8Array(e.target.result);
+                if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return resolve('image/jpeg');
+                if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47 && bytes[4] === 0x0D && bytes[5] === 0x0A && bytes[6] === 0x1A && bytes[7] === 0x0A) return resolve('image/png');
+                if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return resolve('image/webp');
+                return resolve('unknown');
+            };
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsArrayBuffer(file.slice(0, 16));
+        });
+
+        const parsePngChunks = (arrayBuffer) => {
+            const view = new DataView(arrayBuffer);
+            const chunks = [];
+            let offset = 8;
+            while (offset + 12 <= view.byteLength) {
+                const length = view.getUint32(offset);
+                const type = String.fromCharCode(view.getUint8(offset + 4), view.getUint8(offset + 5), view.getUint8(offset + 6), view.getUint8(offset + 7));
+                if (offset + 12 + length > view.byteLength) break;
+                const data = new Uint8Array(arrayBuffer, offset + 8, length);
+                chunks.push({ type, data });
+                offset += 12 + length;
+                if (type === 'IEND') break;
+            }
+            return chunks;
+        };
+
+        const inflateZlib = async (u8, maxOut = 16 * 1024 * 1024) => {
+            if (typeof DecompressionStream === 'undefined') return null;
+            const ds = new DecompressionStream('deflate');
+            const stream = new Blob([u8]).stream().pipeThrough(ds);
+            const reader = stream.getReader();
+            const chunks = [];
+            let total = 0;
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                total += value.byteLength;
+                if (total > maxOut) throw new Error('Decompressed size limit exceeded');
+                chunks.push(value);
+            }
+            const out = new Uint8Array(total);
+            let off = 0;
+            for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+            return out;
+        };
+
+        const decodePngTEXt = (data) => {
+            const nul = data.indexOf(0x00);
+            if (nul <= 0) return null;
+            const keyword = new TextDecoder('utf-8').decode(data.subarray(0, nul));
+            const value = new TextDecoder('utf-8').decode(data.subarray(nul + 1));
+            return { keyword, value };
+        };
+
+        const decodePngZTXt = async (data) => {
+            const nul = data.indexOf(0x00);
+            if (nul <= 0 || nul + 1 >= data.length) return null;
+            const keyword = new TextDecoder('latin1').decode(data.subarray(0, nul));
+            const method = data[nul + 1];
+            if (method !== 0) return null;
+            const out = await inflateZlib(data.subarray(nul + 2));
+            const value = out ? new TextDecoder('latin1').decode(out) : '';
+            return { keyword, value };
+        };
+
+        const decodePngITXt = async (data) => {
+            let offset = 0;
+            const readToNul = () => {
+                const i = data.indexOf(0x00, offset);
+                if (i < 0) return null;
+                const s = data.subarray(offset, i);
+                offset = i + 1;
+                return s;
+            };
+            const keywordBytes = readToNul();
+            if (!keywordBytes) return null;
+            const keyword = new TextDecoder('latin1').decode(keywordBytes);
+            if (offset + 2 > data.length) return null;
+            const compressionFlag = data[offset++];
+            const compressionMethod = data[offset++];
+            const langTag = readToNul();
+            const translated = readToNul();
+            if (langTag === null || translated === null) return null;
+            const payload = data.subarray(offset);
+            let textBytes = payload;
+            if (compressionFlag === 1) {
+                if (compressionMethod !== 0) return null;
+                textBytes = await inflateZlib(payload);
+                if (!textBytes) textBytes = new Uint8Array();
+            }
+            const text = new TextDecoder().decode(textBytes);
+            return { keyword, text };
+        };
+
+        const readPngMetadata = async (file) => {
+            const arrayBuffer = await file.arrayBuffer();
+            const chunks = parsePngChunks(arrayBuffer);
+            const text = {};
+            for (const chunk of chunks) {
+                try {
+                    if (chunk.type === 'tEXt') {
+                        const parsed = decodePngTEXt(chunk.data);
+                        if (parsed?.keyword) text[parsed.keyword] = parsed.value;
+                    } else if (chunk.type === 'zTXt') {
+                        const parsed = await decodePngZTXt(chunk.data);
+                        if (parsed?.keyword) text[parsed.keyword] = parsed.value;
+                    } else if (chunk.type === 'iTXt') {
+                        const parsed = await decodePngITXt(chunk.data);
+                        if (parsed?.keyword) text[parsed.keyword] = parsed.text;
+                    }
+                } catch (_) {}
+            }
+            return text;
+        };
+
+        const readJpegUserComment = (buffer) => {
+            const view = new DataView(buffer);
+            let offset = 2;
+            while (offset < buffer.byteLength) {
+                if (view.getUint8(offset) !== 0xFF) break;
+                const marker = view.getUint8(offset + 1);
+                const size = view.getUint16(offset + 2);
+                if (marker === 0xE1 && view.getUint8(offset + 4) === 0x45 && view.getUint8(offset + 5) === 0x78 && view.getUint8(offset + 6) === 0x69 && view.getUint8(offset + 7) === 0x66 && view.getUint8(offset + 8) === 0x00 && view.getUint8(offset + 9) === 0x00) {
+                    const tiffStart = offset + 10;
+                    const isLE = view.getUint16(tiffStart) === 0x4949;
+                    const get16 = (o) => view.getUint16(tiffStart + o, isLE);
+                    const get32 = (o) => view.getUint32(tiffStart + o, isLE);
+                    const ifd0Offset = get32(4);
+                    const ifd0Count = get16(ifd0Offset);
+                    let exifIFDOffset = null;
+                    for (let i = 0; i < ifd0Count; i++) {
+                        const entryOffset = ifd0Offset + 2 + i * 12;
+                        if (get16(entryOffset) === 0x8769) { exifIFDOffset = get32(entryOffset + 8); break; }
+                    }
+                    if (!exifIFDOffset) return null;
+                    const exifCount = get16(exifIFDOffset);
+                    for (let i = 0; i < exifCount; i++) {
+                        const entryOffset = exifIFDOffset + 2 + i * 12;
+                        if (get16(entryOffset) !== 0x9286) continue;
+                        const count = get32(entryOffset + 4);
+                        const valOffset = get32(entryOffset + 8);
+                        const start = tiffStart + valOffset;
+                        const raw = new Uint8Array(buffer, start, count);
+                        const prefix = new TextDecoder().decode(raw.slice(0, 8));
+                        if (prefix.startsWith('ASCII')) return new TextDecoder('utf-8').decode(raw.slice(8)).replace(/\0+$/, '');
+                        if (prefix.startsWith('UNICODE')) {
+                            const bytes = raw.slice(8);
+                            try { return new TextDecoder('utf-16le').decode(bytes).replace(/\0+$/, ''); } catch (_) {}
+                            try { return new TextDecoder('utf-16be').decode(bytes).replace(/\0+$/, ''); } catch (_) {}
+                        }
+                    }
+                }
+                offset += 2 + size;
+            }
+            return null;
+        };
+
+        const parseWebPChunks = (buffer) => {
+            const view = new DataView(buffer);
+            const sig = new TextDecoder().decode(new Uint8Array(buffer, 0, 4));
+            const format = new TextDecoder().decode(new Uint8Array(buffer, 8, 4));
+            if (sig !== 'RIFF' || format !== 'WEBP') return [];
+            const chunks = [];
+            let offset = 12;
+            while (offset < buffer.byteLength) {
+                const type = new TextDecoder().decode(new Uint8Array(buffer, offset, 4));
+                const size = view.getUint32(offset + 4, true);
+                const data = new Uint8Array(buffer.slice(offset + 8, offset + 8 + size));
+                chunks.push({ type, size, data });
+                offset += 8 + size + (size % 2);
+            }
+            return chunks;
+        };
+
+        const getXmpTagValue = (xmlString, tagName) => {
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(xmlString, 'application/xml');
+                const err = doc.getElementsByTagName('parsererror')[0];
+                if (err) return '';
+                const lc = String(tagName || '').toLowerCase();
+                const all = doc.getElementsByTagName('*');
+                for (const node of all) {
+                    const local = String(node.localName || '').toLowerCase();
+                    if (local === lc || (lc === 'usercomment' && local === 'usercomment')) {
+                        const value = String(node.textContent || '').trim();
+                        if (value) return value;
+                    }
+                }
+            } catch (_) {}
+            return '';
+        };
+
+        const readWebpMetadata = (buffer) => {
+            const chunks = parseWebPChunks(buffer);
+            const out = {};
+            const xmpChunk = chunks.find(c => c.type === 'XMP ');
+            if (xmpChunk) {
+                out.xmp = new TextDecoder().decode(xmpChunk.data);
+                out.description = getXmpTagValue(out.xmp, 'description') || '';
+                out.usercomment = getXmpTagValue(out.xmp, 'UserComment') || '';
+            }
+            const exifChunk = chunks.find(c => c.type === 'EXIF');
+            if (exifChunk) {
+                const exifView = exifChunk.data;
+                const maybeExifHeader = exifView.length >= 6 && exifView[0] === 0x45 && exifView[1] === 0x78 && exifView[2] === 0x69 && exifView[3] === 0x66;
+                const tiff = maybeExifHeader ? exifView.slice(6).buffer : exifView.buffer.slice(exifView.byteOffset, exifView.byteOffset + exifView.byteLength);
+                const userComment = readJpegUserComment((() => {
+                    const exifPrefix = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x00, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00]);
+                    const merged = new Uint8Array(exifPrefix.length + tiff.byteLength);
+                    merged.set(exifPrefix, 0);
+                    merged.set(new Uint8Array(tiff), exifPrefix.length);
+                    const size = merged.length - 4;
+                    merged[4] = (size >> 8) & 0xFF;
+                    merged[5] = size & 0xFF;
+                    return merged.buffer;
+                })());
+                if (userComment) out.user_comment = userComment;
+            }
+            return out;
+        };
+
+        const readRawMetadataFromFile = async (file) => {
+            const fileType = await getImageTypeFromBinarySignature(file);
+            if (fileType === 'image/png') return await readPngMetadata(file);
+            if (fileType === 'image/jpeg') {
+                const buf = await file.arrayBuffer();
+                return { user_comment: readJpegUserComment(buf) || '' };
+            }
+            if (fileType === 'image/webp') {
+                const buf = await file.arrayBuffer();
+                return readWebpMetadata(buf);
+            }
+            return {};
+        };
+
+        const extractFirstJSONObject = (text) => {
+            const s = String(text || '');
+            let start = -1;
+            let depth = 0;
+            let inString = false;
+            let escape = false;
+            for (let i = 0; i < s.length; i++) {
+                const ch = s[i];
+                if (start < 0) {
+                    if (ch === '{') {
+                        start = i;
+                        depth = 1;
+                    }
+                    continue;
+                }
+                if (inString) {
+                    if (escape) {
+                        escape = false;
+                    } else if (ch === '\\') {
+                        escape = true;
+                    } else if (ch === '"') {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (ch === '"') {
+                    inString = true;
+                    continue;
+                }
+                if (ch === '{') depth++;
+                else if (ch === '}') {
+                    depth--;
+                    if (depth === 0) return s.slice(start, i + 1);
+                }
+            }
+            return '';
+        };
+
+        const parseJSONLoose = (input) => {
+            if (typeof input !== 'string') return null;
+            const normalized = String(input || '').replace(/^\uFEFF/, '').replace(/\u0000/g, '').trim();
+            if (!normalized) return null;
+            try { return JSON.parse(normalized); } catch (_) {}
+            const candidate = extractFirstJSONObject(normalized);
+            if (candidate) {
+                try { return JSON.parse(candidate); } catch (_) {}
+                try {
+                    const cleaned = candidate.replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+                    return JSON.parse(cleaned);
+                } catch (_) {}
+            }
+            return null;
+        };
+
+        const getA1111FieldsFromText = (metaText = '') => {
+            const text = String(metaText || '');
+            const pick = (regex) => {
+                const match = text.match(regex);
+                return match ? String(match[1]).trim() : '';
+            };
+            return {
+                steps: pick(/(?:^|[,\n])\s*Steps\s*:\s*([^,\n]+)/i),
+                sampler: pick(/(?:^|[,\n])\s*Sampler\s*:\s*([^,\n]+)/i),
+                cfgScale: pick(/(?:^|[,\n])\s*CFG\s*scale\s*:\s*([^,\n]+)/i),
+                seed: pick(/(?:^|[,\n])\s*Seed\s*:\s*([^,\n]+)/i),
+                aiModel: pick(/(?:^|[,\n])\s*Model\s*:\s*([^,\n]+)/i),
+                modelHash: pick(/(?:^|[,\n])\s*Model\s*hash\s*:\s*([^,\n]+)/i),
+            };
+        };
+
+        const getComfyGenFields = (generationDataText = '') => {
+            const md = parseJSONLoose(generationDataText);
+            if (!md || typeof md !== 'object') return {};
+            return {
+                steps: md.steps ? String(md.steps) : '',
+                sampler: md.samplerName || '',
+                cfgScale: md.cfgScale ? String(md.cfgScale) : '',
+                seed: md.seed ? String(md.seed) : '',
+                aiModel: md.baseModel?.modelFileName || '',
+                modelHash: md.baseModel?.hash || '',
+            };
+        };
+
+        const getComfyPromptFields = (promptText = '') => {
+            const graph = parseJSONLoose(promptText);
+            const textFallback = String(promptText || '');
+
+            const normalizeSeedLike = (seedRaw) => {
+                const s = String(seedRaw || '').trim();
+                if (!s) return '';
+                if (s.startsWith('[')) {
+                    const m = s.match(/^\[\s*"?([^",\]]+)"?/);
+                    return m ? String(m[1]).trim() : s;
+                }
+                return s.replace(/^"|"$/g, '').trim();
+            };
+
+            const regexFallback = () => {
+                const pick = (re) => {
+                    const m = textFallback.match(re);
+                    return m ? String(m[1]).trim() : '';
+                };
+                const resolveReferencedSeedFromText = (rawSeed) => {
+                    const refMatch = String(rawSeed || '').match(/^\[\s*"?(\d+)"?\s*,/);
+                    if (!refMatch) return '';
+                    const nodeId = refMatch[1];
+                    const escapedId = nodeId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const pattern = new RegExp(`\"${escapedId}\"\\s*:\\s*\\{[\\s\\S]*?\"inputs\"\\s*:\\s*\\{[\\s\\S]*?\"seed\"\\s*:\\s*(\"[^\"]+\"|-?\\d+(?:\\.\\d+)?)`, 'i');
+                    const m = textFallback.match(pattern);
+                    if (!m) return '';
+                    return String(m[1] || '').replace(/^"|"$/g, '').trim();
+                };
+
+                const seedRaw = pick(/"seed"\s*:\s*(\[[^\]]+\]|"[^"]+"|-?\d+(?:\.\d+)?)/i) || pick(/"noise_seed"\s*:\s*(\[[^\]]+\]|"[^"]+"|-?\d+(?:\.\d+)?)/i);
+                const seedResolved = resolveReferencedSeedFromText(seedRaw) || normalizeSeedLike(seedRaw);
+                return {
+                    steps: pick(/"steps"\s*:\s*("[^"]+"|-?\d+(?:\.\d+)?)/i).replace(/^"|"$/g, ''),
+                    sampler: pick(/"sampler_name"\s*:\s*"([^"]+)"/i),
+                    cfgScale: pick(/"cfg"\s*:\s*("[^"]+"|-?\d+(?:\.\d+)?)/i).replace(/^"|"$/g, '') || pick(/"guidance"\s*:\s*("[^"]+"|-?\d+(?:\.\d+)?)/i).replace(/^"|"$/g, ''),
+                    seed: seedResolved,
+                    aiModel: pick(/"ckpt_name"\s*:\s*"([^"]+)"/i) || pick(/"base_ckpt_name"\s*:\s*"([^"]+)"/i) || pick(/"unet_name"\s*:\s*"([^"]+)"/i),
+                    modelHash: '',
+                };
+            };
+
+            if (!graph || typeof graph !== 'object') return regexFallback();
+            const entries = Object.entries(graph);
+            const nodes = entries.map(([, node]) => node).filter(Boolean);
+            const getNodeById = (id) => graph?.[String(id)] || null;
+            const normalizeValue = (value, fieldName = '') => {
+                if (Array.isArray(value)) {
+                    if (value.length >= 2 && (typeof value[0] === 'string' || typeof value[0] === 'number')) {
+                        const refNode = getNodeById(value[0]);
+                        if (refNode && refNode.inputs && typeof refNode.inputs === 'object') {
+                            const preferredKeys = fieldName === 'seed' ? ['seed', 'value', 'int', 'number', 'noise_seed'] : ['value', 'text', 'string', 'name', 'model', 'ckpt_name', 'base_ckpt_name', 'unet_name'];
+                            for (const key of preferredKeys) {
+                                if (refNode.inputs[key] !== undefined && refNode.inputs[key] !== null && refNode.inputs[key] !== '') {
+                                    return normalizeValue(refNode.inputs[key], fieldName);
+                                }
+                            }
+                            const firstScalar = Object.values(refNode.inputs).find(v => (typeof v === 'string' || typeof v === 'number') && String(v).trim() !== '');
+                            if (firstScalar !== undefined) return normalizeValue(firstScalar);
+                        }
+                    }
+                    return normalizeValue(value[0], fieldName);
+                }
+                if (value === undefined || value === null) return '';
+                return String(value);
+            };
+            const firstFromNodes = (classRegex, fields) => {
+                for (const node of nodes) {
+                    const classType = String(node.class_type || '').toLowerCase();
+                    if (!classRegex.test(classType)) continue;
+                    for (const field of fields) {
+                        const value = node.inputs?.[field];
+                        const normalizedValue = normalizeValue(value, field).trim();
+                        if (normalizedValue) return normalizedValue;
+                    }
+                }
+                return '';
+            };
+            const fromGraph = {
+                steps: firstFromNodes(/scheduler|sampler/, ['steps']),
+                sampler: firstFromNodes(/scheduler|sampler/, ['sampler_name']),
+                cfgScale: firstFromNodes(/guidance|sampler|cliptextencode/, ['guidance', 'cfg']),
+                seed: firstFromNodes(/randomnoise|sampler|seed/, ['noise_seed', 'seed']),
+                aiModel: firstFromNodes(/checkpoint|loader/, ['ckpt_name', 'base_ckpt_name', 'unet_name']),
+                modelHash: '',
+            };
+            const fallback = regexFallback();
+            return {
+                steps: fromGraph.steps || fallback.steps,
+                sampler: fromGraph.sampler || fallback.sampler,
+                cfgScale: fromGraph.cfgScale || fallback.cfgScale,
+                seed: fromGraph.seed || fallback.seed,
+                aiModel: fromGraph.aiModel || fallback.aiModel,
+                modelHash: '',
+            };
+        };
+
+        const getNovelAIFields = (commentText = '') => {
+            const md = parseJSONLoose(commentText);
+            if (!md || typeof md !== 'object') return {};
+            return {
+                steps: md.steps ? String(md.steps) : '',
+                sampler: md.sampler || '',
+                cfgScale: md.scale ? String(md.scale) : '',
+                seed: md.seed ? String(md.seed) : '',
+                aiModel: md.source || '',
+                modelHash: '',
+            };
+        };
+
+        const normalizeRawMetadataToFields = (rawMetadata = {}) => {
+            const raw = Object.fromEntries(Object.entries(rawMetadata).map(([k, v]) => [String(k || '').toLowerCase(), v]));
+            const sources = [
+                getComfyPromptFields(raw.prompt || raw.workflow || ''),
+                getComfyGenFields(raw.generation_data || ''),
+                getA1111FieldsFromText(raw.parameters || raw.user_comment || raw.usercomment || raw.description || ''),
+                getNovelAIFields(raw.comment || ''),
+            ];
+
+            const merged = {};
+            for (const source of sources) {
+                Object.entries(source).forEach(([k, v]) => {
+                    const value = String(v || '').trim();
+                    if (!value) return;
+                    if (!merged[k]) merged[k] = value;
+                });
+            }
+
+            if (!Object.keys(merged).length) {
+                const values = Object.values(raw).filter(v => typeof v === 'string');
+                for (const valueText of values) {
+                    const parsed = getA1111FieldsFromText(valueText);
+                    Object.entries(parsed).forEach(([k, v]) => {
+                        const value = String(v || '').trim();
+                        if (!value) return;
+                        if (!merged[k]) merged[k] = value;
+                    });
+                }
+            }
+            return merged;
+        };
+
+        const mergeArtistFields = (target, incoming) => {
+            const merged = { ...target };
+            Object.entries(incoming).forEach(([k, v]) => {
+                const next = String(v || '').trim();
+                if (!next) return;
+                const curr = String(merged[k] || '').trim();
+                if (!curr) {
+                    merged[k] = next;
+                    return;
+                }
+                const currParts = curr.split('|').map(s => s.trim()).filter(Boolean);
+                if (!currParts.includes(next)) currParts.push(next);
+                merged[k] = currParts.join(' | ');
+            });
+            return merged;
+        };
+
+        const extractFieldsFromImageUrl = async (imageUrl, artistId = '') => {
+            if (!imageUrl) return null;
+            let blob = null;
+            try {
+                const response = await fetch(imageUrl);
+                blob = await response.blob();
+            } catch (_) {}
+            if (!blob && artistId) {
+                blob = await getImageBlobFromIDB(artistId);
+            }
+            if (!blob) return null;
+            const guessedType = blob.type || (String(imageUrl).includes('data:image/png') ? 'image/png' : String(imageUrl).includes('data:image/jpeg') ? 'image/jpeg' : String(imageUrl).includes('data:image/webp') ? 'image/webp' : 'image/png');
+            const ext = guessedType.includes('png') ? 'png' : guessedType.includes('jpeg') ? 'jpg' : guessedType.includes('webp') ? 'webp' : 'png';
+            const file = new File([blob], `artist-${artistId || 'image'}.${ext}`, { type: guessedType });
+            const rawMetadata = await readRawMetadataFromFile(file);
+            const extracted = normalizeRawMetadataToFields(rawMetadata);
+            const hasAny = Object.values(extracted).some(v => String(v || '').trim());
+            return hasAny ? extracted : null;
+        };
+
+        const extractRawMetadataFromImageUrl = async (imageUrl, artistId = '') => {
+            if (!imageUrl) return null;
+            let blob = null;
+            try {
+                const response = await fetch(imageUrl);
+                blob = await response.blob();
+            } catch (_) {}
+            if (!blob && artistId) {
+                blob = await getImageBlobFromIDB(artistId);
+            }
+            if (!blob) return null;
+            const guessedType = blob.type || (String(imageUrl).includes('data:image/png') ? 'image/png' : String(imageUrl).includes('data:image/jpeg') ? 'image/jpeg' : String(imageUrl).includes('data:image/webp') ? 'image/webp' : 'image/png');
+            const ext = guessedType.includes('png') ? 'png' : guessedType.includes('jpeg') ? 'jpg' : guessedType.includes('webp') ? 'webp' : 'png';
+            const file = new File([blob], `artist-${artistId || 'image'}.${ext}`, { type: guessedType });
+            return await readRawMetadataFromFile(file);
+        };
+
+        const detectComfyWorkflow = (rawMetadata = {}) => {
+            const raw = Object.fromEntries(Object.entries(rawMetadata).map(([k, v]) => [String(k || '').toLowerCase(), v]));
+            const promptOrWorkflow = raw.prompt || raw.workflow || '';
+            if (!promptOrWorkflow) return null;
+            const parsed = parseJSONLoose(promptOrWorkflow);
+            if (!parsed || typeof parsed !== 'object') return null;
+            const entries = Object.entries(parsed);
+            const isComfy = entries.some(([, node]) => node && typeof node === 'object' && (node.class_type || node.inputs));
+            return isComfy ? parsed : null;
+        };
+
+        window.extractGenParamsFromImage = async () => {
+            try {
+                const imageUrl = state.formData.imageUrl;
+                if (!imageUrl) {
+                    showToast('请先上传图片');
+                    return;
+                }
+                const rawMetadata = await extractRawMetadataFromImageUrl(imageUrl, state.formData.id || '');
+                if (!rawMetadata) {
+                    console.warn('[metadata-debug] no raw metadata', {
+                        artistId: state.formData.id || null,
+                        imageUrlPrefix: String(imageUrl).slice(0, 80)
+                    });
+                    state.comfyWorkflowData = null;
+                    showToast('未读取到可用参数');
+                    renderModals();
+                    return;
+                }
+                const comfyData = detectComfyWorkflow(rawMetadata);
+                state.comfyWorkflowData = comfyData;
+                const extracted = normalizeRawMetadataToFields(rawMetadata);
+                const hasAny = Object.values(extracted).some(v => String(v || '').trim());
+                if (!hasAny && !comfyData) {
+                    showToast('未读取到可用参数');
+                    renderModals();
+                    return;
+                }
+                if (hasAny) {
+                    const merged = mergeArtistFields(state.formData, extracted);
+                    state.formData = { ...state.formData, ...merged };
+                }
+                renderModals();
+                showToast(comfyData ? '参数已合并（检测到 ComfyUI 工作流）' : '参数已自动合并');
+            } catch (error) {
+                console.error('Extract metadata error:', error);
+                showToast('读取参数失败');
+            }
+        };
+
+        window.extractAllMetadata = async () => {
+            const list = state.liveArtists || [];
+            if (!list.length) {
+                showToast('暂无条目可识别');
+                return;
+            }
+            let ok = 0;
+            let skipped = 0;
+            const updated = [...list];
+            for (let i = 0; i < updated.length; i++) {
+                const artist = updated[i];
+                if (!artist.imageUrl && !artist.id) { skipped++; continue; }
+                try {
+                    const extracted = await extractFieldsFromImageUrl(artist.imageUrl || '', artist.id || '');
+                    if (!extracted) { skipped++; continue; }
+                    updated[i] = mergeArtistFields(artist, extracted);
+                    ok++;
+                } catch (_) {
+                    skipped++;
+                }
+            }
+            if (ok > 0) updateState({ liveArtists: updated });
+            showToast(`批量识别完成：成功 ${ok}，跳过 ${skipped}`);
+        };
+
+        const themes = {
+            light: { name: '浅色', icon: 'sun', isDark: false },
+            dark: { name: '深色', icon: 'moon', isDark: true },
+            midnight: { name: '午夜', icon: 'star', isDark: true },
+            sakura: { name: '樱花', icon: 'flower-2', isDark: false },
+            ocean: { name: '海洋', icon: 'droplets', isDark: false }
+        };
+
+        const applyTheme = (themeMode) => {
+            const mode = themeMode || state.theme;
+            const themeConfig = themes[mode] || themes.light;
+            
+            document.body.classList.remove(...Object.keys(themes).map(k => `theme-${k}`));
+            document.body.classList.add(`theme-${mode}`);
+            
+            if (themeConfig.isDark) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        };
+
+        const applyBackgroundImage = (imageDataUrl) => {
+            const body = document.body;
+            body.classList.remove('bg-dark', 'bg-light');
+            if (imageDataUrl) {
+                body.style.backgroundImage = `url("${imageDataUrl}")`;
+                body.style.backgroundSize = 'cover';
+                body.style.backgroundPosition = 'center';
+                body.style.backgroundRepeat = 'no-repeat';
+                body.style.backgroundAttachment = 'fixed';
+                body.classList.add('has-custom-bg');
+                // Detect background brightness for text color adaptation
+                try {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const size = 64; // sample at low res for speed
+                        canvas.width = size;
+                        canvas.height = size;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, size, size);
+                        const data = ctx.getImageData(0, 0, size, size).data;
+                        let totalBrightness = 0;
+                        const pixelCount = size * size;
+                        for (let i = 0; i < data.length; i += 4) {
+                            // Perceived brightness: 0.299R + 0.587G + 0.114B
+                            totalBrightness += data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114;
+                        }
+                        const avgBrightness = totalBrightness / pixelCount;
+                        body.classList.toggle('bg-dark', avgBrightness < 128);
+                        body.classList.toggle('bg-light', avgBrightness >= 128);
+                    };
+                    img.src = imageDataUrl;
+                } catch(_) {}
+            } else {
+                body.style.removeProperty('background-image');
+                body.style.removeProperty('background-size');
+                body.style.removeProperty('background-position');
+                body.style.removeProperty('background-repeat');
+                body.style.removeProperty('background-attachment');
+                body.classList.remove('has-custom-bg');
+            }
+        };
+
+        const applyDisplayPersonalization = (displayCfg = state.displayConfig) => {
+            const cfg = { ...getDefaultDisplayConfig(), ...(displayCfg || {}) };
+            document.body.classList.toggle('liquid-glass', cfg.styleMode === 'liquid-glass');
+            applyBackgroundImage(cfg.backgroundImage || '');
+        };
+
+        // =========================================
+        // 3. State & Business Logic
+        // =========================================
+        const INITIAL_DATA = [
+            { id: '1', name: 'Mika Pikazo', tag: 'mika pikazo', imageUrl: 'https://placehold.co/600x400/818CF8/FFFFFF?text=Mika', isFavorite: true, createdAt: 1700000000000, danbooruCount: 1500, isNSFW: false, note: '', aiModel: 'Stable Diffusion', styleTag: '日系薄涂', characterTag: 'mika pikazo', clothingTag: '学生制服', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
+            { id: '2', name: 'Wlop', tag: 'wlop', imageUrl: 'https://placehold.co/600x400/6366F1/FFFFFF?text=Wlop', isFavorite: false, createdAt: 1700000000001, danbooruCount: 800, isNSFW: false, note: '', aiModel: 'Midjourney', styleTag: '插画风格', characterTag: 'wlop', clothingTag: '披风', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
+            { id: '3', name: 'Kantoku', tag: 'kantoku', imageUrl: 'https://placehold.co/600x400/EC4899/FFFFFF?text=Kantoku', isFavorite: true, createdAt: 1700000000002, danbooruCount: 4200, isNSFW: false, note: '', aiModel: 'NovelAI', styleTag: '赛璐璐', characterTag: 'kantoku', clothingTag: '女仆装', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
+            { id: '4', name: 'Carmine', tag: 'carmine', imageUrl: '', isFavorite: false, createdAt: 1700000000003, danbooruCount: 200, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' }
+        ];
+
+        const getDefaultDisplayConfig = () => ({ showCardInfo: false, blurNSFW: true, layoutPreset: 'balanced', gridCols: 4, tileSize: 'md', customCols: 4, customGap: 24, customAspect: '3/4', styleMode: 'default', backgroundImage: '' });
+
+        const normalizeCategoryName = (value) => String(value || '').trim();
+        const escapeHtml = (value) => String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        const escapeJsSingleQuote = (value) => String(value || '')
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/\r?\n/g, ' ');
+        const normalizeCategoryList = (input) => {
+            const list = Array.isArray(input) ? input : [];
+            const seen = new Set();
+            const out = [];
+            for (const item of list) {
+                const name = normalizeCategoryName(item);
+                if (!name || seen.has(name)) continue;
+                seen.add(name);
+                out.push(name);
+            }
+            return out;
+        };
+        const buildKnownCategoriesFromArtists = (artists = []) => normalizeCategoryList((artists || []).map(a => a?.category));
+        const normalizeArtistRecord = (artist = {}) => {
+            const createdAtRaw = artist.createdAt;
+            const createdAt = Number.isFinite(Number(createdAtRaw)) ? Number(createdAtRaw) : Date.now();
+            const category = normalizeCategoryName(artist.category);
+            return {
+                ...artist,
+                category,
+                isNSFW: !!artist.isNSFW,
+                note: artist.note || '',
+                aiModel: artist.aiModel || '',
+                styleTag: artist.styleTag || '',
+                characterTag: artist.characterTag || '',
+                clothingTag: artist.clothingTag || '',
+                cfgScale: artist.cfgScale || '',
+                seed: artist.seed || '',
+                steps: artist.steps || '',
+                sampler: artist.sampler || '',
+                modelHash: artist.modelHash || '',
+                createdAt
+            };
+        };
+        const normalizeArtistList = (list = []) => Array.isArray(list) ? list.map(item => normalizeArtistRecord(item || {})) : [];
+
+        let state = {
+            liveArtists: [],
+            categories: [],
+            activeCategory: 'all',
+            selectedArtists: {}, 
+            searchQuery: '',
+            sortMode: 'default', 
+            isDataLoading: true,
+            isModalOpen: false,
+            editingArtist: null,
+            previewImage: null,
+            showThemeMenu: false,
+            viewingNote: null,
+            tagSelector: null, // { id, x, y } for tag copy selector
+            hoverExpandCategory: '',
+            formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
+            theme: localStorage.getItem(THEME_KEY) || 'light',
+            aiConfig: JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || '{}'),
+            displayConfig: (() => {
+                const parsed = JSON.parse(localStorage.getItem(DISPLAY_CONFIG_KEY) || '{}');
+                return { ...getDefaultDisplayConfig(), ...parsed };
+            })(),
+            isAISettingsOpen: false,
+            comfyWorkflowData: null,
+            showComfyWorkflow: false
+        };
+
+        let hoverHideTimer = null;
+
+        const updateState = (newState, shouldRender = true) => {
+            const oldSort = state.sortMode;
+            state = { ...state, ...newState };
+            
+            if (!state.isDataLoading && newState.liveArtists) {
+                const metadata = state.liveArtists.map(a => {
+                    const { imageUrl, ...rest } = a;
+                    const safeUrl = (imageUrl && (imageUrl.startsWith('data:') || imageUrl.startsWith('blob:'))) ? '' : imageUrl;
+                    return { ...rest, imageUrl: safeUrl };
+                });
+                try { localStorage.setItem(METADATA_KEY, JSON.stringify(metadata)); } catch(e) {}
+            }
+
+            if (newState.categories !== undefined) {
+                try { localStorage.setItem(CATEGORY_KEY, JSON.stringify(normalizeCategoryList(state.categories))); } catch (e) {}
+            }
+            
+            if (newState.theme) {
+                localStorage.setItem(THEME_KEY, newState.theme);
+                applyTheme(newState.theme);
+            }
+
+            if (newState.displayConfig) {
+                localStorage.setItem(DISPLAY_CONFIG_KEY, JSON.stringify(state.displayConfig));
+                applyDisplayPersonalization(state.displayConfig);
+            }
+
+            if (shouldRender) {
+                const fullRender = newState.liveArtists || newState.searchQuery !== undefined || newState.activeCategory !== undefined || newState.categories !== undefined || (newState.sortMode && newState.sortMode !== oldSort) || newState.theme;
+        if (fullRender) {
+                    renderApp(); 
+                } else {
+                    if (newState.selectedArtists) {
+                        renderArtistCards(); 
+                        renderSelectionArea(); 
+                    }
+                    if (newState.isModalOpen !== undefined || newState.isAISettingsOpen !== undefined) renderModals();
+                    if (newState.previewImage !== undefined || newState.viewingNote !== undefined) renderModals();
+                    if (newState.tagSelector !== undefined) renderModals();
+                    if (newState.displayConfig) {
+                        renderArtistCards();
+                        if (state.isAISettingsOpen) renderModals();
+                    }
+                    if (newState.showThemeMenu !== undefined) renderThemeMenu();
+                }
+            }
+        };
+
+        // --- Global Actions ---
+        window.toggleThemeMenu = () => updateState({ showThemeMenu: !state.showThemeMenu });
+        
+        window.setTheme = (themeName) => {
+            updateState({ theme: themeName, showThemeMenu: false });
+        };
+
+        window.openLayoutSettings = () => updateState({ isAISettingsOpen: true });
+
+        window.setLayoutPreset = (preset) => {
+            const base = state.displayConfig || {};
+            if (preset === 'compact') {
+                updateState({ displayConfig: { ...base, layoutPreset: 'compact', gridCols: 5, tileSize: 'sm', customGap: 6, customAspect: '3/4' } });
+            } else if (preset === 'showcase') {
+                updateState({ displayConfig: { ...base, layoutPreset: 'showcase', gridCols: 3, tileSize: 'lg', customGap: 10, customAspect: '3/4' } });
+            } else if (preset === 'balanced') {
+                updateState({ displayConfig: { ...base, layoutPreset: 'balanced', gridCols: 4, tileSize: 'md', customGap: 8, customAspect: '3/4' } });
+            } else {
+                updateState({ displayConfig: { ...base, layoutPreset: 'custom' } });
+            }
+            renderArtistCards();
+        };
+
+        window.updateLayoutCustom = (field, value) => {
+            const base = state.displayConfig || {};
+            const nextValue = ['customCols', 'customGap'].includes(field) ? parseInt(value, 10) || 0 : value;
+            updateState({ displayConfig: { ...base, layoutPreset: 'custom', [field]: nextValue } }, false);
+            renderArtistCards();
+        };
+
+        window.setStyleMode = (mode) => {
+            const normalizedMode = mode === 'liquid-glass' ? 'liquid-glass' : 'default';
+            const base = state.displayConfig || {};
+            updateState({ displayConfig: { ...base, styleMode: normalizedMode } });
+        };
+
+        window.handleDisplayBackgroundUpload = async (event) => {
+            const file = event?.target?.files?.[0];
+            if (!file) return;
+            if (!file.type || !file.type.startsWith('image/')) {
+                showToast('请选择图片文件');
+                event.target.value = '';
+                return;
+            }
+
+            if (['image/heic', 'image/heif'].includes(file.type.toLowerCase())) {
+                showToast('当前浏览器不支持 HEIC/HEIF，请先转为 JPG/PNG');
+                event.target.value = '';
+                return;
+            }
+
+            try {
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const img = new Image();
+                    const objectUrl = URL.createObjectURL(file);
+                    img.onload = () => {
+                        try {
+                            const targetRatio = window.innerWidth / Math.max(1, window.innerHeight);
+                            const sourceRatio = img.width / Math.max(1, img.height);
+                            let sx = 0, sy = 0, sw = img.width, sh = img.height;
+                            if (sourceRatio > targetRatio) {
+                                sw = Math.floor(img.height * targetRatio);
+                                sx = Math.floor((img.width - sw) / 2);
+                            } else {
+                                sh = Math.floor(img.width / targetRatio);
+                                sy = Math.floor((img.height - sh) / 2);
+                            }
+                            const canvas = document.createElement('canvas');
+                            canvas.width = Math.min(1920, sw);
+                            canvas.height = Math.min(1080, sh);
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+                            const out = canvas.toDataURL('image/jpeg', 0.88);
+                            URL.revokeObjectURL(objectUrl);
+                            resolve(out);
+                        } catch (e) {
+                            URL.revokeObjectURL(objectUrl);
+                            reject(e);
+                        }
+                    };
+                    img.onerror = (e) => {
+                        URL.revokeObjectURL(objectUrl);
+                        reject(e);
+                    };
+                    img.src = objectUrl;
+                });
+                const base = state.displayConfig || {};
+                updateState({ displayConfig: { ...base, backgroundImage: dataUrl } });
+                showToast('背景图已应用');
+            } catch (_) {
+                try {
+                    const rawDataUrl = await readImageAsBase64(file);
+                    const base = state.displayConfig || {};
+                    updateState({ displayConfig: { ...base, backgroundImage: rawDataUrl } });
+                    showToast('背景图已应用（原图模式）');
+                } catch (_) {
+                    showToast('背景图读取失败');
+                }
+            } finally {
+                event.target.value = '';
+            }
+        };
+
+        window.removeDisplayBackground = () => {
+            const base = state.displayConfig || {};
+            updateState({ displayConfig: { ...base, backgroundImage: '' } });
+            showToast('背景图已移除');
+        };
+
+        const getCardLayoutClasses = () => {
+            const cfg = { ...getDefaultDisplayConfig(), ...(state.displayConfig || {}) };
+            if (cfg.layoutPreset === 'compact') return { cols: 5, gap: 20, aspect: '3/4' };
+            if (cfg.layoutPreset === 'showcase') return { cols: 3, gap: 32, aspect: '3/4' };
+            if (cfg.layoutPreset === 'balanced') return { cols: 4, gap: 24, aspect: '3/4' };
+            return {
+                cols: Math.min(12, Math.max(1, parseInt(cfg.customCols, 10) || 4)),
+                gap: Math.min(120, Math.max(0, parseInt(cfg.customGap, 10) || 24)),
+                aspect: cfg.customAspect || '3/4'
+            };
+        };
+
+        window.handleSearch = (val) => updateState({ searchQuery: val });
+
+        window.setActiveCategory = (categoryValue) => {
+            const raw = String(categoryValue || 'all');
+            const normalized = raw === 'all' ? 'all' : normalizeCategoryName(raw);
+            if (normalized !== 'all' && !state.categories.includes(normalized)) return;
+            updateState({ activeCategory: normalized });
+        };
+
+        window.addCategory = () => {
+            const input = prompt('请输入新分类名称');
+            if (input === null) return;
+            const next = normalizeCategoryName(input);
+            if (!next) {
+                showToast('分类名称不能为空');
+                return;
+            }
+            if (state.categories.includes(next)) {
+                showToast('分类已存在');
+                return;
+            }
+            if (state.isModalOpen) {
+                state.formData.category = next;
+            }
+            updateState({ categories: [...state.categories, next], activeCategory: next });
+            showToast(`已新增分类: ${next}`);
+        };
+
+        window.deleteCategory = (categoryName) => {
+            const targetCategory = normalizeCategoryName(categoryName);
+            if (!targetCategory) {
+                showToast('分类名称不能为空');
+                return;
+            }
+            if (!state.categories.includes(targetCategory)) {
+                showToast('分类不存在');
+                return;
+            }
+
+            const affectedCount = state.liveArtists.reduce((count, artist) => {
+                return count + (normalizeCategoryName(artist.category) === targetCategory ? 1 : 0);
+            }, 0);
+            const confirmMessage = `确定删除分类「${targetCategory}」吗？\n该分类下 ${affectedCount} 位画师将被移动到未分类。`;
+            if (!confirm(confirmMessage)) return;
+
+            const nextArtists = state.liveArtists.map(artist => {
+                if (normalizeCategoryName(artist.category) !== targetCategory) return artist;
+                return { ...artist, category: '' };
+            });
+            const nextCategories = state.categories.filter(cat => cat !== targetCategory);
+            const nextActiveCategory = state.activeCategory === targetCategory ? 'all' : state.activeCategory;
+
+            if (state.isModalOpen && normalizeCategoryName(state.formData.category) === targetCategory) {
+                state.formData.category = '';
+            }
+
+            updateState({ liveArtists: nextArtists, categories: nextCategories, activeCategory: nextActiveCategory });
+            showToast(`已删除分类: ${targetCategory}`);
+        };
+
+        window.handleDeleteCategoryClick = (categoryName, e) => {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            window.deleteCategory(categoryName);
+        };
+
+        window.handleCategoryContextMenu = (categoryName, e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            window.deleteCategory(categoryName);
+        };
+
+        window.setSortMode = (newMode) => {
+            let finalMode = newMode;
+            if (newMode === 'alpha') finalMode = state.sortMode === 'alpha-asc' ? 'alpha-desc' : 'alpha-asc';
+            if (newMode === 'danbooru') finalMode = state.sortMode === 'danbooru-desc' ? 'danbooru-asc' : 'danbooru-desc';
+            if (newMode === 'model') finalMode = state.sortMode === 'model-asc' ? 'model-desc' : 'model-asc';
+            updateState({ sortMode: finalMode });
+        };
+
+        window.clearSelection = () => updateState({ selectedArtists: {} });
+        window.toggleSelection = (id) => {
+            const newSel = { ...state.selectedArtists };
+            if (newSel[id]) delete newSel[id]; else newSel[id] = 1.0;
+            updateState({ selectedArtists: newSel });
+        };
+        window.updateArtistWeight = (id, delta, e) => {
+            e.stopPropagation();
+            const curr = state.selectedArtists[id] || 1.0;
+            let next = parseFloat((curr + delta).toFixed(1));
+            if (next < 0.1) next = 0.1; if (next > 2.0) next = 2.0;
+            updateState({ selectedArtists: { ...state.selectedArtists, [id]: next } }, false);
+            renderSelectionArea();
+        };
+        window.toggleFavorite = (id, e) => {
+            e.stopPropagation();
+            const newArtists = state.liveArtists.map(a => a.id === id ? { ...a, isFavorite: !a.isFavorite } : a);
+            updateState({ liveArtists: newArtists });
+        };
+        window.handleCardAction = (id, action, e) => {
+            e.stopPropagation(); 
+            if (action === 'delete') {
+                if (confirm('确定删除此画师吗？')) {
+                    deleteImageFromIDB(id).then(() => {
+                        const newArtists = state.liveArtists.filter(a => a.id !== id);
+                        const newSel = { ...state.selectedArtists };
+                        delete newSel[id];
+                        updateState({ liveArtists: newArtists, selectedArtists: newSel });
+                        showToast('已删除');
+                    });
+                }
+            } else if (action === 'edit') {
+                const artist = state.liveArtists.find(a => a.id === id);
+                if (artist) {
+                    state.formData = { ...artist }; 
+                    updateState({ isModalOpen: true, editingArtist: artist, previewImage: null });
+                }
+            } else if (action === 'preview') {
+                const artist = state.liveArtists.find(a => a.id === id);
+                if (artist) updateState({ previewImage: artist.imageUrl });
+            }
+        };
+        
+        // 修复：使用 execCommand 来兼容 iframe 环境
+        window.copyPrompts = () => {
+            const list = getSelectedList();
+            const text = list.map(a => a.weight === 1.0 ? a.tag : `(${a.tag}:${a.weight.toFixed(1)})`).join(', ');
+            
+            // 创建临时 textarea 进行复制
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            // 确保元素不可见但存在
+            textArea.style.position = "fixed"; 
+            textArea.style.left = "-9999px";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            
+            try {
+                const successful = document.execCommand('copy');
+                if(successful) {
+                    showToast('已复制 Prompt');
+                } else {
+                    showToast('复制失败');
+                }
+            } catch (err) {
+                showToast('复制失败');
+            }
+            
+            document.body.removeChild(textArea);
+        };
+
+        window.copyTag = (id, e) => {
+            e.stopPropagation();
+            const artist = state.liveArtists.find(a => a.id === id);
+            if (!artist) return;
+
+            // Check if there are AI-related tags, show selector if so
+            if (artist.aiModel || artist.styleTag || artist.characterTag || artist.clothingTag) {
+                // Get button position
+                const btn = e.currentTarget;
+                const rect = btn.getBoundingClientRect();
+                updateState({
+                    tagSelector: {
+                        id: artist.id,
+                        x: rect.right + 10,
+                        y: rect.top
+                    }
+                });
+                return;
+            }
+
+            // Original behavior: direct copy
+            const textArea = document.createElement("textarea");
+            textArea.value = artist.tag;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-9999px";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+
+            try {
+                const successful = document.execCommand('copy');
+                if(successful) {
+                    showToast(`已复制: ${artist.tag}`);
+                } else {
+                    showToast('复制失败');
+                }
+            } catch (err) {
+                showToast('复制失败');
+            }
+
+            document.body.removeChild(textArea);
+        };
+
+        window.closeTagSelector = () => updateState({ tagSelector: null });
+
+        window.copySpecificTag = (id, tagType, e) => {
+            e.stopPropagation();
+            const artist = state.liveArtists.find(a => a.id === id);
+            if (!artist) return;
+            const valueMap = {
+                tag: artist.tag,
+                aiModel: artist.aiModel,
+                styleTag: artist.styleTag,
+                characterTag: artist.characterTag,
+                clothingTag: artist.clothingTag,
+            };
+            const value = String(valueMap[tagType] || '').trim();
+            if (!value) {
+                showToast('内容为空，无法复制');
+                return;
+            }
+            const textArea = document.createElement("textarea");
+            textArea.value = value;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-9999px";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+
+            try {
+                const successful = document.execCommand('copy');
+                if(successful) {
+        const labels = { tag: '图像Tag', styleTag: '画风Tag', characterTag: '角色Tag', clothingTag: '服装Tag', aiModel: '模型' };
+                    showToast(`已复制: ${labels[tagType] || tagType}`);
+                } else {
+                    showToast('复制失败');
+                }
+            } catch (err) {
+                showToast('复制失败');
+            }
+
+            document.body.removeChild(textArea);
+            updateState({ tagSelector: null });
+        };
+
+        const hasArtistHoverDetails = (artist) => !!(artist && (artist.aiModel || artist.steps || artist.sampler || artist.cfgScale || artist.seed || artist.modelHash || artist.tag || artist.styleTag || artist.characterTag || artist.clothingTag));
+
+        const renderHoverDetailContent = (artist) => {
+            const safeTitle = (v) => String(v || '').replace(/"/g, '&quot;');
+            return `
+                <div id="hover-detail-panel" data-artist-id="${artist.id}" class="fixed z-40 rounded-2xl border border-white/35 dark:border-slate-600/60 bg-black/75 dark:bg-slate-900/90 backdrop-blur-xl shadow-2xl p-3.5 text-xs text-white/90 leading-tight max-h-[72vh] overflow-y-auto custom-scrollbar w-[20rem] max-w-[calc(100vw-1.5rem)] animate-fade-in">
+                    <div class="text-[10px] uppercase tracking-wider text-white/70 mb-2 font-semibold">生成参数</div>
+                    <div class="space-y-1.5 text-[11px] text-white/90 leading-tight">
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Model</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.aiModel)}">${artist.aiModel || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Steps</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.steps)}">${artist.steps || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Sampler</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.sampler)}">${artist.sampler || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">CFG</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.cfgScale)}">${artist.cfgScale || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Seed</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.seed)}">${artist.seed || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Hash</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.modelHash)}">${artist.modelHash || '-'}</span></div>
+                    </div>
+                    <div class="h-px bg-white/15 my-2.5"></div>
+                    <div class="text-[10px] uppercase tracking-wider text-white/70 mb-2 font-semibold">标签</div>
+                    <div class="space-y-1.5 text-[11px] text-white/90 leading-tight">
+                                <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Full</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.tag)}">${artist.tag || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Style</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.styleTag)}">${artist.styleTag || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Character</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.characterTag)}">${artist.characterTag || '-'}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Clothing</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.clothingTag)}">${artist.clothingTag || '-'}</span></div>
+                    </div>
+                </div>`;
+        };
+
+        const positionHoverDetailPanel = (cardEl, panelEl) => {
+            if (!cardEl || !panelEl) return;
+            const rect = cardEl.getBoundingClientRect();
+            const viewportPad = 12;
+            const gap = 14;
+            const targetWidth = Math.min(320, Math.max(250, window.innerWidth - viewportPad * 2));
+            panelEl.style.width = `${targetWidth}px`;
+
+            const preferRightX = rect.right + gap;
+            const fitsRight = preferRightX + targetWidth <= window.innerWidth - viewportPad;
+            const leftX = Math.max(viewportPad, rect.left - targetWidth - gap);
+            panelEl.style.left = `${fitsRight ? preferRightX : leftX}px`;
+
+            const maxTop = window.innerHeight - panelEl.offsetHeight - viewportPad;
+            const top = Math.max(viewportPad, Math.min(rect.top, maxTop));
+            panelEl.style.top = `${top}px`;
+        };
+
+        const clearHoverDetail = () => {
+            const hoverContainer = document.getElementById('hover-detail-container');
+            if (hoverContainer) hoverContainer.innerHTML = '';
+        };
+
+        window.showHoverDetail = (id, e) => {
+            clearTimeout(hoverHideTimer);
+            const artist = state.liveArtists.find(a => a.id === id);
+            if (!hasArtistHoverDetails(artist)) {
+                clearHoverDetail();
+                return;
+            }
+            const hoverContainer = document.getElementById('hover-detail-container');
+            if (!hoverContainer) return;
+
+            hoverContainer.innerHTML = renderHoverDetailContent(artist);
+            const panelEl = document.getElementById('hover-detail-panel');
+            if (!panelEl) return;
+
+            const cardEl = e?.currentTarget || document.querySelector(`.artist-card[data-artist-id="${id}"]`);
+            positionHoverDetailPanel(cardEl, panelEl);
+
+            panelEl.addEventListener('mouseenter', () => clearTimeout(hoverHideTimer));
+            panelEl.addEventListener('mouseleave', (evt) => {
+                const next = evt.relatedTarget;
+                if (next && next.closest('.artist-card')) return;
+                clearHoverDetail();
+            });
+        };
+
+        window.scheduleHideHoverDetail = (e) => {
+            const next = e.relatedTarget;
+            if (next && next.closest('#hover-detail-panel')) return;
+            clearTimeout(hoverHideTimer);
+            hoverHideTimer = setTimeout(() => clearHoverDetail(), 90);
+        };
+
+        window.addEventListener('resize', () => {
+            const panelEl = document.getElementById('hover-detail-panel');
+            if (!panelEl) return;
+            const id = panelEl.dataset.artistId;
+            const cardEl = document.querySelector(`.artist-card[data-artist-id="${id}"]`);
+            if (!cardEl) return clearHoverDetail();
+            positionHoverDetailPanel(cardEl, panelEl);
+        });
+
+        window.addEventListener('scroll', () => {
+            const panelEl = document.getElementById('hover-detail-panel');
+            if (!panelEl) return;
+            const id = panelEl.dataset.artistId;
+            const cardEl = document.querySelector(`.artist-card[data-artist-id="${id}"]`);
+            if (!cardEl) return clearHoverDetail();
+            positionHoverDetailPanel(cardEl, panelEl);
+        }, true);
+
+        window.openMetadataEditor = () => {
+            const imageUrl = state.formData.imageUrl;
+            if (!imageUrl) {
+                showToast('请先添加图片');
+                return;
+            }
+            const openWithUrl = (url) => {
+                const normalizedPath = METADATA_EDITOR_PATH.replace(/\\/g, '/');
+                const baseUrl = normalizedPath.startsWith('http') ? normalizedPath : `file:///${normalizedPath.replace(/^\/+/, '')}`;
+                const targetUrl = `${baseUrl}#img=${encodeURIComponent(url)}`;
+                window.open(targetUrl, '_blank');
+            };
+
+            if (imageUrl.startsWith('blob:')) {
+                fetch(imageUrl)
+                    .then(r => r.blob())
+                    .then(blobToDataUrl)
+                    .then(openWithUrl)
+                    .catch(() => showToast('无法打开元数据编辑器'));
+                return;
+            }
+            openWithUrl(imageUrl);
+        };
+
+        // --- Import / Export ---
+        window.handleExport = async () => {
+            const imageMap = await getAllImagesFromIDB({ forExport: true });
+            const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
+            const exportPayload = {
+                version: EXPORT_VERSION,
+                exportedAt: new Date().toISOString(),
+                categories: normalizeCategoryList(state.categories),
+                artists: fullData
+            };
+            const jsonStr = JSON.stringify(exportPayload, null, 2);
+            const blob = new Blob([jsonStr], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = `nai_artists_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            showToast('数据已导出');
+        };
+        window.triggerImport = () => document.getElementById('import-file-input').click();
+
+        const mapLegacyArtists = (list = []) => {
+            return (Array.isArray(list) ? list : []).map(item => ({
+                id: String(item?.id || Date.now() + Math.random()),
+                name: item?.name || 'Unknown',
+                tag: String(item?.tag || item?.name || 'unknown'),
+                category: normalizeCategoryName(item?.category),
+                imageUrl: item?.image || item?.imageUrl || '',
+                danbooruCount: parseInt(item?.count ?? item?.danbooruCount, 10) || 0,
+                isFavorite: !!item?.isFavorite,
+                isNSFW: !!item?.isNSFW,
+                note: item?.note || '',
+                aiModel: item?.aiModel || '',
+                styleTag: item?.styleTag || '',
+                characterTag: item?.characterTag || '',
+                clothingTag: item?.clothingTag || '',
+                cfgScale: item?.cfgScale || '',
+                seed: item?.seed || '',
+                steps: item?.steps || '',
+                sampler: item?.sampler || '',
+                modelHash: item?.modelHash || '',
+                createdAt: item?.time ? new Date(item.time).getTime() : (item?.createdAt || Date.now())
+            }));
+        };
+
+        const resolveImportPayload = (rawJson) => {
+            if (Array.isArray(rawJson)) {
+                const looksLegacyArray = rawJson.some(item => item && typeof item === 'object' && ('image' in item || 'count' in item || 'time' in item));
+                return {
+                    artists: looksLegacyArray ? mapLegacyArtists(rawJson) : rawJson,
+                    categories: []
+                };
+            }
+            if (!rawJson || typeof rawJson !== 'object') {
+                return { artists: [], categories: [] };
+            }
+            const objArtists = Array.isArray(rawJson.artists) ? rawJson.artists : null;
+            if (!objArtists) {
+                return { artists: [], categories: [] };
+            }
+            const isVersioned = Number(rawJson.version) >= 2;
+            if (isVersioned) {
+                return {
+                    artists: objArtists,
+                    categories: normalizeCategoryList(rawJson.categories)
+                };
+            }
+            const looksLegacy = objArtists.some(item => item && typeof item === 'object' && ('image' in item || 'count' in item || 'time' in item));
+            return {
+                artists: looksLegacy ? mapLegacyArtists(objArtists) : objArtists,
+                categories: normalizeCategoryList(rawJson.categories)
+            };
+        };
+
+        window.handleImport = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (ev) => {
+                try {
+                    const rawText = String(ev?.target?.result || '').trim();
+                    if (!rawText) throw new Error('Empty file');
+                    const rawJson = JSON.parse(rawText);
+                    const resolved = resolveImportPayload(rawJson);
+                    const importList = normalizeArtistList(resolved.artists || []);
+
+                    const currentTags = new Set(state.liveArtists.map(a => a.tag));
+                    const newArtists = [...state.liveArtists];
+                    const importedCategories = new Set(normalizeCategoryList(resolved.categories));
+                    let addedCount = 0;
+                    let skippedInvalid = 0;
+
+                    for (const item of importList) {
+                        const tag = String(item?.tag || '').trim();
+                        if (!tag) { skippedInvalid++; continue; }
+                        if (currentTags.has(tag)) continue;
+
+                        const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+                        if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
+                            await saveImageToIDB(id, item.imageUrl);
+                        }
+
+                        const category = normalizeCategoryName(item.category);
+                        if (category) importedCategories.add(category);
+
+                        const normalizedArtist = normalizeArtistRecord({
+                            id,
+                            name: item.name || tag,
+                            tag,
+                            category,
+                            imageUrl: item.imageUrl || '',
+                            danbooruCount: parseInt(item.danbooruCount, 10) || 0,
+                            isFavorite: !!item.isFavorite,
+                            isNSFW: !!item.isNSFW,
+                            note: item.note || '',
+                            aiModel: item.aiModel || '',
+                            styleTag: item.styleTag || '',
+                            characterTag: item.characterTag || '',
+                            clothingTag: item.clothingTag || '',
+                            cfgScale: item.cfgScale || '',
+                            seed: item.seed || '',
+                            steps: item.steps || '',
+                            sampler: item.sampler || '',
+                            modelHash: item.modelHash || '',
+                            createdAt: item.createdAt || Date.now()
+                        });
+
+                        newArtists.push(normalizedArtist);
+                        currentTags.add(tag);
+                        addedCount++;
+                    }
+
+                    const mergedCategories = normalizeCategoryList([
+                        ...state.categories,
+                        ...Array.from(importedCategories),
+                        ...buildKnownCategoriesFromArtists(newArtists)
+                    ]);
+
+                    const nextActiveCategory = state.activeCategory === 'all' || mergedCategories.includes(state.activeCategory)
+                        ? state.activeCategory
+                        : 'all';
+
+                    updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory });
+                    if (addedCount > 0) {
+                        showToast(skippedInvalid > 0 ? `成功导入 ${addedCount} 位画师（跳过 ${skippedInvalid} 条无效数据）` : `成功导入 ${addedCount} 位画师`);
+                    } else {
+                        showToast('未发现新数据 (重复或无效数据)');
+                    }
+                } catch (err) {
+                    showToast('导入失败: 格式错误');
+                }
+            };
+            reader.readAsText(file);
+            e.target.value = '';
+        };
+
+        // --- Modal Logic ---
+        window.openAddModal = () => {
+            state.formData = { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' };
+            state.comfyWorkflowData = null;
+            state.showComfyWorkflow = false;
+            updateState({ isModalOpen: true, editingArtist: null, previewImage: null });
+        };
+        window.handleCloseModal = () => {
+            state.comfyWorkflowData = null;
+            state.showComfyWorkflow = false;
+            updateState({ isModalOpen: false, editingArtist: null, previewImage: null });
+        };
+
+        window.handleModalFormInput = (field, value) => {
+            state.formData[field] = value;
+            if (field === 'tag') {
+                const btn = document.getElementById('modal-save-btn');
+                if (btn) {
+                    if (value.trim()) {
+                        btn.removeAttribute('disabled');
+                        btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    } else {
+                        btn.setAttribute('disabled', 'true');
+                        btn.classList.add('opacity-50', 'cursor-not-allowed');
+                    }
+                }
+            }
+        };
+        window.handleModalFileSelect = async (e) => {
+            const file = e.target.files[0];
+            if (!file || !file.type.startsWith('image/')) return;
+            try {
+                const base64 = await readImageAsBase64(file);
+                state.formData.imageUrl = base64;
+                updateModalImagePreviewDOM(); 
+                showToast('图片已添加');
+                // Auto-detect ComfyUI workflow metadata from the original file
+                try {
+                    let rawMetadata = null;
+                    try {
+                        rawMetadata = await readRawMetadataFromFile(file);
+                    } catch (readErr) {
+                        console.warn('[comfy-detect] direct file read failed, trying base64 fallback:', readErr);
+                    }
+                    // Fallback: if direct read failed, try from the base64 data URL
+                    if (!rawMetadata || Object.keys(rawMetadata).length === 0) {
+                        try {
+                            rawMetadata = await extractRawMetadataFromImageUrl(state.formData.imageUrl);
+                        } catch (fallbackErr) {
+                            console.warn('[comfy-detect] base64 fallback also failed:', fallbackErr);
+                        }
+                    }
+                    console.log('[comfy-detect] rawMetadata keys:', rawMetadata ? Object.keys(rawMetadata) : null);
+                    if (rawMetadata && Object.keys(rawMetadata).length > 0) {
+                        const comfyData = detectComfyWorkflow(rawMetadata);
+                        console.log('[comfy-detect] comfyData:', comfyData ? 'found (' + Object.keys(comfyData).length + ' nodes)' : null);
+                        state.comfyWorkflowData = comfyData;
+                        if (comfyData) {
+                            // Inject button directly into DOM instead of full re-render
+                            const extractBtn = document.getElementById('modal-extract-btn');
+                            if (extractBtn && !document.getElementById('comfy-workflow-btn')) {
+                                const btn = document.createElement('button');
+                                btn.type = 'button';
+                                btn.id = 'comfy-workflow-btn';
+                                btn.onclick = toggleComfyWorkflowViewer;
+                                btn.className = 'btn-icon liquid-action-tint w-full mt-2 py-2.5 rounded-xl bg-violet-500/90 text-white font-bold text-sm shadow-lg hover:bg-violet-500 transition-all flex items-center justify-center gap-2';
+                                btn.innerHTML = '<i data-lucide="workflow" class="w-4 h-4"></i>查看 ComfyUI 工作流';
+                                extractBtn.parentNode.appendChild(btn);
+                                lucide.createIcons(btn);
+                            }
+                        }
+                    }
+                } catch (comfyErr) { console.error('[comfy-detect] error:', comfyErr); }
+            } catch(e) { showToast('图片读取失败'); }
+            e.target.value = '';
+        };
+        window.handleModalRemoveImage = (e) => {
+            e.stopPropagation();
+            state.formData.imageUrl = '';
+            state.comfyWorkflowData = null;
+            updateModalImagePreviewDOM();
+            renderModals();
+        };
+        const updateModalExtractButtonDOM = () => {
+            const extractBtn = document.getElementById('modal-extract-btn');
+            if (!extractBtn) return;
+            const hasImage = !!state.formData.imageUrl;
+            extractBtn.disabled = !hasImage;
+            extractBtn.classList.toggle('opacity-50', !hasImage);
+            extractBtn.classList.toggle('cursor-not-allowed', !hasImage);
+        };
+        const updateModalImagePreviewDOM = () => {
+            const container = document.getElementById('image-upload-container');
+            if (!container) return;
+            if (state.formData.imageUrl) {
+                container.innerHTML = `
+                    <div class="relative w-full max-w-[220px] mx-auto aspect-[3/4] rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-700 group shadow-sm bg-slate-100 dark:bg-slate-700/50">
+                        <img src="${state.formData.imageUrl}" class="w-full h-full object-cover" />
+                        <button onclick="handleModalRemoveImage(event)" class="absolute top-2 right-2 bg-black/60 text-white p-2 rounded-full hover:bg-red-500 transition-colors shadow-md btn-icon liquid-action"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                    </div>`;
+            } else {
+                container.innerHTML = `
+                    <div class="w-full max-w-[220px] mx-auto aspect-[3/4] border-2 border-dashed border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50 rounded-2xl flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors group btn-icon" onclick="document.getElementById('modal-file-input').click()">
+                        <i data-lucide="image-plus" class="w-8 h-8 text-slate-400 group-hover:text-indigo-500 transition-colors mb-2"></i>
+                        <p class="text-xs font-medium text-slate-500 group-hover:text-indigo-500">点击上传图片</p>
+                    </div>`;
+            }
+            lucide.createIcons(container);
+            updateModalExtractButtonDOM();
+        };
+        window.handleSaveArtist = async () => {
+            const { name, tag, imageUrl, category, danbooruCount, isNSFW, note, aiModel, styleTag, characterTag, clothingTag, cfgScale, seed, steps, sampler, modelHash } = state.formData;
+            if (!tag || !tag.trim()) return;
+            const isEdit = !!state.editingArtist;
+            const id = isEdit ? state.editingArtist.id : Date.now().toString();
+            if (imageUrl && imageUrl.startsWith('data:')) await saveImageToIDB(id, imageUrl);
+            else if (isEdit && !imageUrl) await deleteImageFromIDB(id);
+            const normalizedCategory = normalizeCategoryName(category);
+            
+            const artistData = {
+                id, name: name || tag, tag: tag.trim(), imageUrl: imageUrl, 
+                category: normalizedCategory,
+                danbooruCount: parseInt(danbooruCount) || 0,
+                isNSFW: !!isNSFW,
+                note: note || '',
+                aiModel: aiModel || '',
+                styleTag: styleTag || '',
+                characterTag: characterTag || '',
+                clothingTag: clothingTag || '',
+                cfgScale: cfgScale || '',
+                seed: seed || '',
+                steps: steps || '',
+                sampler: sampler || '',
+                modelHash: modelHash || '',
+                isFavorite: isEdit ? state.editingArtist.isFavorite : false,
+                createdAt: isEdit ? state.editingArtist.createdAt : Date.now(),
+            };
+            
+            let newArtists;
+            if (isEdit) {
+                newArtists = state.liveArtists.map(a => a.id === id ? artistData : a);
+                showToast('已更新');
+            } else {
+                newArtists = [artistData, ...state.liveArtists];
+                showToast('已添加');
+            }
+
+            const mergedCategories = normalizeCategoryList([
+                ...state.categories,
+                ...buildKnownCategoriesFromArtists(newArtists)
+            ]);
+            const nextActiveCategory = state.activeCategory === 'all' || mergedCategories.includes(state.activeCategory)
+                ? state.activeCategory
+                : 'all';
+
+            updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory, isModalOpen: false, editingArtist: null });
+        };
+        window.closePreview = () => updateState({ previewImage: null });
+        window.viewNote = (id, e) => {
+            e.stopPropagation();
+            const artist = state.liveArtists.find(a => a.id === id);
+            if (artist && artist.note) {
+                updateState({ viewingNote: { id: artist.id, name: artist.name, note: artist.note } });
+            }
+        };
+        window.closeNoteViewer = () => updateState({ viewingNote: null });
+
+        // --- AI Configuration & Logic ---
+        window.openAISettings = () => updateState({ isAISettingsOpen: true });
+        window.closeAISettings = () => updateState({ isAISettingsOpen: false });
+        window.toggleComfyWorkflowViewer = () => {
+            state.showComfyWorkflow = !state.showComfyWorkflow;
+            renderModals();
+        };
+        window.closeComfyWorkflowViewer = () => {
+            state.showComfyWorkflow = false;
+            renderModals();
+        };
+        window.saveAISettings = () => {
+             const apiHost = (document.getElementById('ai-host-input').value || 'https://api.openai.com/v1').replace(/\/+$/, '');
+             const apiKey = document.getElementById('ai-key-input').value.trim();
+             const model = document.getElementById('ai-model-input').value.trim() || 'gpt-4o';
+             const showCardInfo = document.getElementById('show-card-info-toggle').checked;
+             const blurNSFW = document.getElementById('blur-nsfw-toggle').checked;
+             const layoutPreset = document.getElementById('layout-preset-select').value;
+             const customCols = parseInt(document.getElementById('layout-custom-cols').value, 10) || 4;
+             const customGap = parseInt(document.getElementById('layout-custom-gap').value, 10) || 24;
+             const customAspect = document.getElementById('layout-custom-aspect').value || '3/4';
+             const styleMode = document.getElementById('style-mode-select').value || 'default';
+              
+             const newConfig = { apiHost, apiKey, model };
+             const newDisplayConfig = { ...getDefaultDisplayConfig(), ...state.displayConfig, showCardInfo, blurNSFW, layoutPreset, customCols, customGap, customAspect, styleMode };
+             updateState({ aiConfig: newConfig, displayConfig: newDisplayConfig, isAISettingsOpen: false });
+             localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(newConfig));
+             localStorage.setItem(DISPLAY_CONFIG_KEY, JSON.stringify(newDisplayConfig));
+             showToast('设置已保存');
+         };
+
+        window.analyzeArtistStyle = async () => {
+            const { imageUrl } = state.formData;
+            const config = state.aiConfig || {};
+            
+            if (!imageUrl) { showToast('请先上传图片'); return; }
+            if (!config.apiKey) { showToast('请先配置 AI Key'); window.openAISettings(); return; }
+
+            const btn = document.getElementById('analyze-btn');
+            const originalHTML = btn.innerHTML;
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>`;
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(`${config.apiHost}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: config.model,
+                        messages: [
+                            {
+                                role: "user",
+                                content: [
+                                    { type: "text", text: "请分析这张图片的画风，并用精准的六个中文字符总结（例如：'赛博朋克霓虹'、'厚涂油画质感'）。请直接返回这六个字，不要包含任何标点或其他内容。" },
+                                    { type: "image_url", image_url: { url: imageUrl } }
+                                ]
+                            }
+                        ],
+                        max_tokens: 50
+                    })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error?.message || response.statusText);
+                }
+
+                const data = await response.json();
+                const content = data.choices[0].message.content.trim();
+                const cleanContent = content.replace(/[^\u4e00-\u9fa5]/g, '').slice(0, 6); // Extract first 6 Chinese chars
+
+                if (cleanContent) {
+                    state.formData.name = cleanContent;
+                    const nameInput = document.getElementById('modal-artist-name');
+                    if (nameInput) nameInput.value = cleanContent;
+                    showToast(`分析成功: ${cleanContent}`);
+                } else {
+                    showToast('分析结果为空');
+                }
+            } catch (error) {
+                console.error('AI Analysis Error:', error);
+                showToast(`分析失败: ${error.message}`);
+            } finally {
+                btn.innerHTML = originalHTML;
+                btn.disabled = false;
+                lucide.createIcons(btn);
+            }
+        };
+
+        // =========================================
+        // 5. Rendering
+        // =========================================
+        const getSelectedList = () => Object.keys(state.selectedArtists).map(id => {
+            const a = state.liveArtists.find(x => x.id === id);
+            return a ? { ...a, weight: state.selectedArtists[id] } : null;
+        }).filter(Boolean);
+
+        const renderApp = () => {
+            const app = document.getElementById('app');
+            if (!app.hasChildNodes()) {
+                app.innerHTML = `
+                    <header class="h-20 px-6 flex items-center justify-between glass-header sticky top-0 z-20 flex-shrink-0 transition-colors duration-300">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                                <i data-lucide="images" class="w-5 h-5 text-white"></i>
+                            </div>
+                            <h1 class="text-xl font-bold tracking-tight text-slate-800 dark:text-white">AI <span class="text-indigo-600 dark:text-indigo-400">画廊</span></h1>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <div class="relative hidden md:block group">
+                                <i data-lucide="search" class="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors"></i>
+                                <input type="text" placeholder="搜索图像..." value="${state.searchQuery}" oninput="handleSearch(this.value)" 
+                                    class="pl-12 pr-4 py-3 bg-white/50 dark:bg-slate-800/50 border border-white/60 dark:border-slate-700 rounded-2xl text-base focus:outline-none focus:ring-2 focus:ring-indigo-400/50 w-72 transition-all text-slate-800 dark:text-slate-100 placeholder-slate-500" />
+                            </div>
+                            
+                            <!-- AI Settings -->
+                            <button onclick="openLayoutSettings()" title="设置" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
+                                <i data-lucide="settings" class="w-6 h-6 text-indigo-500"></i>
+                            </button>
+
+                            <!-- Theme Toggle -->
+                            <div class="relative">
+                                <button onclick="toggleThemeMenu()" title="切换主题" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
+                                    <i data-lucide="palette" class="w-6 h-6 text-indigo-500"></i>
+                                </button>
+                                <div id="theme-menu" class="hidden"></div>
+                            </div>
+
+                            <div class="h-8 w-px bg-slate-300 dark:bg-slate-700 mx-1"></div>
+                            <button onclick="triggerImport()" title="导入 JSON" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-indigo-600 dark:text-indigo-400">
+                                <i data-lucide="arrow-up-circle" class="w-6 h-6"></i>
+                            </button>
+                            <input type="file" id="import-file-input" accept=".json" class="hidden" onchange="handleImport(event)" />
+                            <button onclick="handleExport()" title="导出 JSON" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-indigo-600 dark:text-indigo-400">
+                                <i data-lucide="arrow-down-circle" class="w-6 h-6"></i>
+                            </button>
+                            <button onclick="extractAllMetadata()" title="自动识别全部元数据" aria-label="自动识别全部元数据" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-indigo-600 dark:text-indigo-400">
+                                <i data-lucide="scan-search" class="w-6 h-6"></i>
+                            </button>
+                            <button onclick="openAddModal()" class="btn-icon liquid-action-tint flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-2xl text-base font-bold shadow-lg shadow-indigo-500/30 border border-indigo-500/50">
+                                <i data-lucide="plus" class="w-5 h-5"></i><span>添加</span>
+                            </button>
+                        </div>
+                    </header>
+                    <div class="app-layout">
+                        <main class="golden-ratio-main p-6 custom-scrollbar relative">
+                            <div id="filters-container" class="flex gap-3 mb-6 overflow-x-auto py-3 px-1 custom-scrollbar"></div>
+                            <div id="cards-container" class="grid pb-24"></div>
+                        </main>
+                        <aside class="sidebar-container glass-sidebar shadow-2xl z-10 flex flex-col" id="sidebar-area"></aside>
+                    </div>
+                `;
+            }
+
+            renderThemeMenu();
+            
+            // Render Filters
+            const renderFilterBtn = (mode, label, icon, toggle) => {
+                const isActive = toggle ? (state.sortMode.startsWith(mode)) : state.sortMode === mode;
+                let arrow = '';
+                if (toggle && isActive) arrow = state.sortMode.endsWith('asc') ? 'arrow-up' : 'arrow-down';
+                const activeClass = 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md';
+                const inactiveClass = 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50';
+                return `<button onclick="setSortMode('${mode}')" class="btn-icon flex items-center gap-2 px-5 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${isActive ? activeClass : inactiveClass}"><i data-lucide="${icon}" class="w-4 h-4"></i><span>${label}</span>${arrow ? `<i data-lucide="${arrow}" class="w-3 h-3"></i>` : ''}</button>`;
+            };
+            document.getElementById('filters-container').innerHTML = `
+                ${renderFilterBtn('default', '默认', 'filter', false)}
+                ${renderFilterBtn('alpha', '名称', 'arrow-down-a-z', true)}
+                ${renderFilterBtn('danbooru', '热度', 'flame', true)}
+                ${renderFilterBtn('model', '模型', 'cpu', true)}
+                <div class="border-l border-slate-300 dark:border-slate-600 mx-2 h-6 self-center"></div>
+                ${renderFilterBtn('favorite', '收藏', 'heart', false)}
+                <div class="border-l border-slate-300 dark:border-slate-600 mx-2 h-6 self-center"></div>
+                <button onclick="setActiveCategory('all')" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${state.activeCategory === 'all' ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md' : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50'}"><i data-lucide="layout-grid" class="w-4 h-4"></i><span>全部分类</span></button>
+                ${state.categories.map(cat => {
+                    const chipToneClass = state.activeCategory === cat
+                        ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md'
+                        : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50';
+                    return `<button onclick="setActiveCategory('${escapeJsSingleQuote(cat)}')" oncontextmenu="handleCategoryContextMenu('${escapeJsSingleQuote(cat)}', event)" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${chipToneClass}" title="右键删除分类"><i data-lucide="tag" class="w-4 h-4"></i><span>${escapeHtml(cat)}</span></button>`;
+                }).join('')}
+                <button onclick="addCategory()" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap glass-card border-dashed border-indigo-300/70 dark:border-indigo-700/70 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20"><i data-lucide="plus-circle" class="w-4 h-4"></i><span>新增分类</span></button>
+            `;
+
+            renderArtistCards();
+            renderSelectionArea();
+            renderModals();
+            lucide.createIcons();
+            applyTheme();
+            applyDisplayPersonalization();
+        };
+
+        const renderThemeMenu = () => {
+            const menu = document.getElementById('theme-menu');
+            if (!menu) return;
+            
+            if (state.showThemeMenu) {
+                menu.className = "absolute right-0 top-full mt-4 w-48 bg-white/90 dark:bg-slate-800/90 backdrop-blur-xl border border-white/60 dark:border-slate-700 rounded-2xl shadow-2xl z-50 overflow-hidden animate-fade-in p-2 flex flex-col gap-1";
+                menu.innerHTML = Object.keys(themes).map(key => `
+                    <button onclick="setTheme('${key}')" class="flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-medium transition-colors ${state.theme === key ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-300' : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700/50'}">
+                        <i data-lucide="${themes[key].icon}" class="w-4 h-4"></i>
+                        ${themes[key].name}
+                    </button>
+                `).join('');
+                
+                const closeHandler = (e) => {
+                    if (!e.target.closest('.relative')) {
+                        updateState({ showThemeMenu: false });
+                        document.removeEventListener('click', closeHandler);
+                    }
+                };
+                setTimeout(() => document.addEventListener('click', closeHandler), 0);
+            } else {
+                menu.className = "hidden";
+                menu.innerHTML = "";
+            }
+            lucide.createIcons(menu);
+        };
+
+        const renderArtistCards = () => {
+            const container = document.getElementById('cards-container');
+            if (!container) return;
+            const layout = getCardLayoutClasses();
+            container.className = `grid pb-24`;
+            container.style.gridTemplateColumns = `repeat(${layout.cols}, minmax(0, 1fr))`;
+            container.style.gap = `${layout.gap}px`;
+            clearHoverDetail();
+            let list = state.liveArtists.filter(a => 
+                a.name.toLowerCase().includes(state.searchQuery.toLowerCase()) || 
+                a.tag.toLowerCase().includes(state.searchQuery.toLowerCase())
+            );
+            if (state.activeCategory !== 'all') {
+                list = list.filter(a => normalizeCategoryName(a.category) === state.activeCategory);
+            }
+            if (state.sortMode === 'favorite') list = list.filter(a => a.isFavorite);
+            const sm = state.sortMode;
+            if (sm === 'alpha-asc') list.sort((a,b) => a.name.localeCompare(b.name));
+            else if (sm === 'alpha-desc') list.sort((a,b) => b.name.localeCompare(a.name));
+            else if (sm === 'danbooru-desc') list.sort((a,b) => b.danbooruCount - a.danbooruCount);
+            else if (sm === 'danbooru-asc') list.sort((a,b) => a.danbooruCount - b.danbooruCount);
+            else if (sm === 'model-asc') list.sort((a,b) => (a.aiModel || '').localeCompare(b.aiModel || ''));
+            else if (sm === 'model-desc') list.sort((a,b) => (b.aiModel || '').localeCompare(a.aiModel || ''));
+            else if (sm === 'favorite') list.sort((a,b) => a.name.localeCompare(b.name));
+            else list.sort((a,b) => b.createdAt - a.createdAt);
+
+            if (list.length === 0 && !state.isDataLoading) {
+                container.innerHTML = `<div class="col-span-full text-center py-32 text-slate-400 dark:text-slate-500"><i data-lucide="search-x" class="w-16 h-16 mb-4 mx-auto opacity-50"></i><p class="text-xl font-medium">未找到相关图像</p></div>`;
+                return;
+            }
+
+            container.innerHTML = list.map(artist => {
+                const isSel = !!state.selectedArtists[artist.id];
+                return `
+                <div onclick="toggleSelection('${artist.id}')" onmouseenter="showHoverDetail('${artist.id}', event)" onmouseleave="scheduleHideHoverDetail(event)" data-artist-id="${artist.id}" class="group artist-card relative glass-card rounded-3xl overflow-hidden cursor-pointer hover:-translate-y-2 transition-all duration-300 bg-white/40 dark:bg-slate-800/40 ${isSel ? 'ring-4 ring-indigo-500 dark:ring-indigo-400 shadow-2xl scale-[1.02]' : 'hover:shadow-xl dark:border-white/5'}">
+                    <div class="aspect-[${layout.aspect}] bg-slate-100 dark:bg-slate-700/50 relative overflow-hidden">
+                        ${artist.imageUrl 
+                            ? `<img src="${artist.imageUrl}" class="w-full h-full object-cover transition-all duration-500 group-hover:scale-110 ${artist.isNSFW && state.displayConfig?.blurNSFW !== false ? 'blur-xl group-hover:blur-none' : ''}" loading="lazy" />` 
+                            : `<div class="w-full h-full flex items-center justify-center text-slate-300 dark:text-slate-600"><i data-lucide="image" class="w-12 h-12"></i></div>`
+                        }
+                        ${artist.isNSFW ? `<div class="absolute bottom-3 left-3 px-2.5 py-1 bg-red-500/90 backdrop-blur-sm text-white text-xs font-bold rounded-lg shadow-lg z-20 flex items-center gap-1"><i data-lucide="eye-off" class="w-3 h-3"></i>NSFW</div>` : ''}
+                        ${isSel ? `<div class="absolute inset-0 bg-indigo-500/20 dark:bg-indigo-400/20 z-10 animate-fade-in flex items-center justify-center"><div class="bg-white dark:bg-slate-900 rounded-full p-2 shadow-lg"><i data-lucide="check" class="w-6 h-6 text-indigo-600 dark:text-indigo-400"></i></div></div>` : ''}
+                        
+                        <div class="absolute top-3 right-3 flex flex-col gap-2 translate-x-14 opacity-0 group-hover:translate-x-0 group-hover:opacity-100 transition-all duration-300 z-30">
+                             ${artist.note ? `<button onclick="viewNote('${artist.id}', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-amber-600 dark:text-amber-400 rounded-full backdrop-blur-md shadow-lg hover:bg-amber-50 dark:hover:bg-slate-700" title="${artist.note.length > 50 ? artist.note.substring(0, 50).replace(/"/g, '&quot;') + '...' : artist.note.replace(/"/g, '&quot;')}"><i data-lucide="file-text" class="w-5 h-5"></i></button>` : ''}
+                             <button onclick="copyTag('${artist.id}', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-indigo-600 dark:text-indigo-400 rounded-full backdrop-blur-md shadow-lg hover:bg-indigo-50 dark:hover:bg-slate-700" title="复制 Tag"><i data-lucide="copy" class="w-5 h-5"></i></button>
+                             <button onclick="handleCardAction('${artist.id}', 'preview', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 rounded-full backdrop-blur-md shadow-lg hover:bg-indigo-50 dark:hover:bg-slate-700" title="预览"><i data-lucide="eye" class="w-5 h-5"></i></button>
+                             <button onclick="handleCardAction('${artist.id}', 'edit', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 rounded-full backdrop-blur-md shadow-lg hover:bg-indigo-50 dark:hover:bg-slate-700" title="编辑"><i data-lucide="edit-3" class="w-5 h-5"></i></button>
+                             <button onclick="handleCardAction('${artist.id}', 'delete', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-red-500 dark:text-red-400 rounded-full backdrop-blur-md shadow-lg hover:bg-red-50 dark:hover:bg-red-900/30" title="删除"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
+                        </div>
+                        <button onclick="toggleFavorite('${artist.id}', event)" class="btn-icon liquid-action absolute top-3 left-3 p-2.5 rounded-full ${artist.isFavorite ? 'bg-white/90 dark:bg-slate-800/90 text-pink-500 shadow-md' : 'bg-black/20 text-white/70 hover:bg-white/90 hover:text-pink-400'} backdrop-blur-sm transition-all z-30"><i data-lucide="heart" class="w-5 h-5 ${artist.isFavorite ? 'fill-current' : ''}"></i></button>
+                    </div>
+                    <div class="p-4 absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/70 to-transparent backdrop-blur-sm ${state.displayConfig?.showCardInfo ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0'} transition-all duration-300">
+                        <h3 class="font-bold text-white text-base truncate tracking-tight drop-shadow-lg">${artist.name}</h3>
+                        <div class="flex justify-between items-center mt-1.5">
+                            <span class="text-xs text-white/80 font-mono truncate max-w-[50%] drop-shadow">${artist.tag}</span>
+                            <div class="flex items-center gap-1.5">
+                                ${artist.category ? `<span class="text-[10px] font-bold bg-indigo-500/35 text-white px-1.5 py-0.5 rounded flex items-center gap-0.5 backdrop-blur-sm"><i data-lucide="tag" class="w-2.5 h-2.5"></i>${escapeHtml(artist.category)}</span>` : ''}
+                                ${artist.danbooruCount > 0 ? `<span class="text-[10px] font-bold bg-white/20 text-white px-1.5 py-0.5 rounded flex items-center gap-0.5 backdrop-blur-sm"><i data-lucide="layers" class="w-2.5 h-2.5"></i>${artist.danbooruCount}</span>` : ''}
+                            </div>
+                        </div>
+
+                    </div>
+                </div>`;
+            }).join('');
+            lucide.createIcons(container);
+        };
+
+        const renderSelectionArea = () => {
+            const container = document.getElementById('sidebar-area');
+            if (!container) return;
+            const list = getSelectedList();
+            if (list.length < 2) {
+                container.innerHTML = '';
+                container.classList.add('hidden');
+                return;
+            }
+            container.classList.remove('hidden');
+            container.innerHTML = `
+                <div class="p-6 border-b border-white/20 dark:border-slate-700/50 flex items-center justify-between flex-shrink-0">
+                    <h2 class="font-bold text-xl text-slate-800 dark:text-white flex items-center gap-3"><span class="w-3 h-8 bg-indigo-500 rounded-full shadow-lg shadow-indigo-500/40"></span> 生成器</h2>
+                    <span class="text-sm font-bold bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 px-3 py-1 rounded-full shadow-sm border border-indigo-100 dark:border-slate-600">${list.length}</span>
+                </div>
+                <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-3 custom-scrollbar">
+                    ${list.length === 0 ? `<div class="h-full flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 opacity-60"><i data-lucide="sparkles" class="w-12 h-12 mb-4"></i><p class="text-lg">点击左侧卡片</p><p class="text-sm">组合你的 Prompt</p></div>` : list.map(a => `
+                        <div class="flex items-center justify-between glass-card bg-white/60 dark:bg-slate-800/60 p-3 rounded-2xl group hover:border-indigo-300 dark:hover:border-indigo-700 transition-all">
+                            <div class="flex items-center gap-3 min-w-0 flex-1">
+                                <div class="w-12 h-12 rounded-xl bg-slate-200 dark:bg-slate-700 overflow-hidden flex-shrink-0 shadow-sm">${a.imageUrl ? `<img src="${a.imageUrl}" class="w-full h-full object-cover"/>` : ''}</div>
+                                <div class="min-w-0"><p class="text-sm font-bold text-slate-700 dark:text-slate-200 truncate">${a.name}</p><p class="text-xs text-slate-500 dark:text-slate-400 font-mono truncate opacity-80">${a.tag}</p></div>
+                            </div>
+                            <div class="flex items-center gap-2 flex-shrink-0">
+                                <div class="bg-white dark:bg-slate-900 border border-indigo-100 dark:border-slate-700 px-2 py-1 rounded-lg text-sm font-bold text-indigo-600 dark:text-indigo-400 font-mono w-12 text-center">${a.weight.toFixed(1)}</div>
+                                <div class="flex flex-col gap-1">
+                                <button onclick="updateArtistWeight('${a.id}', 0.1, event)" class="btn-icon liquid-action p-0.5 bg-white dark:bg-slate-700 hover:bg-indigo-50 dark:hover:bg-slate-600 rounded-md text-slate-600 dark:text-slate-300 transition-colors"><i data-lucide="chevron-up" class="w-3 h-3"></i></button>
+                                <button onclick="updateArtistWeight('${a.id}', -0.1, event)" class="btn-icon liquid-action p-0.5 bg-white dark:bg-slate-700 hover:bg-indigo-50 dark:hover:bg-slate-600 rounded-md text-slate-600 dark:text-slate-300 transition-colors"><i data-lucide="chevron-down" class="w-3 h-3"></i></button>
+                                </div>
+                            </div>
+                            <button onclick="toggleSelection('${a.id}')" class="p-2.5 ml-1 text-slate-400 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 transition-colors"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="p-6 border-t border-white/20 dark:border-slate-700/50 flex-shrink-0 bg-white/30 dark:bg-slate-900/30">
+                    <div class="bg-white/80 dark:bg-slate-800/80 border border-indigo-100 dark:border-slate-700 rounded-2xl p-4 mb-4 max-h-40 overflow-y-auto text-sm font-mono text-slate-700 dark:text-slate-300 break-words leading-relaxed shadow-inner custom-scrollbar">
+                        ${list.map(a => a.weight === 1 ? a.tag : `(${a.tag}:${a.weight.toFixed(1)})`).join(', ') || '<span class="text-slate-400 italic">等待选择...</span>'}
+                    </div>
+                    <div class="grid grid-cols-4 gap-3">
+                        <button onclick="clearSelection()" class="btn-icon liquid-action col-span-1 py-3.5 flex justify-center items-center bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm hover:text-red-500 hover:border-red-200 dark:hover:border-red-900"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
+                        <button onclick="copyPrompts()" class="${list.length === 0 ? 'opacity-50 cursor-not-allowed' : ''} btn-icon liquid-action-tint col-span-3 py-3.5 bg-slate-900 dark:bg-white text-white dark:text-slate-900 rounded-2xl font-bold shadow-lg flex justify-center items-center gap-2 hover:bg-slate-800 dark:hover:bg-indigo-50"><i data-lucide="copy" class="w-5 h-5"></i> 复制咒语</button>
+                    </div>
+                </div>
+            `;
+            lucide.createIcons(container);
+        };
+
+        const renderModals = () => {
+            const container = document.getElementById('modal-container');
+            const aiContainer = document.getElementById('ai-settings-container');
+            const previewContainer = document.getElementById('preview-modal-container');
+
+            // Render AI Settings Modal
+            if (state.isAISettingsOpen) {
+                const config = state.aiConfig || {};
+                const displayConfig = { ...getDefaultDisplayConfig(), ...(state.displayConfig || {}) };
+                aiContainer.innerHTML = `
+                    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; z-index: 60; padding: 1rem;" class="animate-fade-in">
+                        <div class="absolute inset-0 bg-slate-900/30 dark:bg-black/60 backdrop-blur-md" onclick="closeAISettings()"></div> 
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[2rem] shadow-2xl p-5 md:p-6 relative z-20 w-full max-w-6xl border dark:border-slate-700 max-h-[90vh] overflow-hidden flex flex-col">
+                            <button onclick="closeAISettings()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            <h2 class="text-xl md:text-2xl font-bold text-slate-800 dark:text-white mb-4 md:mb-5 flex items-center gap-3 pr-10"><span class="w-2 h-7 bg-indigo-500 rounded-full"></span>设置</h2>
+
+                            <div class="flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
+                                <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 lg:gap-6">
+                                    <div class="space-y-4">
+                                        <h3 class="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-center gap-2"><i data-lucide="layout-grid" class="w-4 h-4"></i>显示 / 布局 / 个性化</h3>
+                                        <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-3">
+                                    <label class="flex items-center justify-between cursor-pointer">
+                                        <div>
+                                            <span class="text-sm font-medium text-slate-700 dark:text-slate-200">始终显示卡片信息</span>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">关闭后仅在悬停时显示</p>
+                                        </div>
+                                        <input type="checkbox" id="show-card-info-toggle" ${displayConfig.showCardInfo ? 'checked' : ''} class="w-12 h-6 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full relative cursor-pointer transition-colors checked:bg-indigo-500 dark:checked:bg-indigo-400 before:content-[''] before:absolute before:w-5 before:h-5 before:bg-white before:rounded-full before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-6">
+                                    </label>
+                                    <div class="h-px bg-slate-200 dark:bg-slate-700"></div>
+                                    <label class="flex items-center justify-between cursor-pointer">
+                                        <div>
+                                            <span class="text-sm font-medium text-slate-700 dark:text-slate-200">模糊 NSFW 内容</span>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">悬停可查看完整图片</p>
+                                        </div>
+                                        <input type="checkbox" id="blur-nsfw-toggle" ${displayConfig.blurNSFW !== false ? 'checked' : ''} class="w-12 h-6 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full relative cursor-pointer transition-colors checked:bg-indigo-500 dark:checked:bg-indigo-400 before:content-[''] before:absolute before:w-5 before:h-5 before:bg-white before:rounded-full before:top-0.5 before:left-0.5 before:transition-transform checked:before:translate-x-6">
+                                    </label>
+                                    <div class="h-px bg-slate-200 dark:bg-slate-700"></div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">界面风格</label>
+                                        <select id="style-mode-select" class="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-slate-700 dark:text-slate-200" onchange="setStyleMode(this.value)">
+                                            <option value="default" ${displayConfig.styleMode !== 'liquid-glass' ? 'selected' : ''}>默认</option>
+                                            <option value="liquid-glass" ${displayConfig.styleMode === 'liquid-glass' ? 'selected' : ''}>液态玻璃（Liquid Glass）</option>
+                                        </select>
+                                    </div>
+                                    <div class="h-px bg-slate-200 dark:bg-slate-700"></div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">背景图片</label>
+                                        <div class="flex items-center gap-2">
+                                            <label for="display-bg-upload" class="flex-1 cursor-pointer text-center px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-slate-700 dark:text-slate-200 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors">上传背景图</label>
+                                            <button type="button" onclick="removeDisplayBackground()" class="btn-icon liquid-action px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 hover:text-red-500 dark:hover:text-red-400 transition-colors">移除</button>
+                                        </div>
+                                        <input id="display-bg-upload" type="file" accept="image/*" class="hidden" onchange="handleDisplayBackgroundUpload(event)">
+                                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-2">自动居中裁切填充，保持比例不拉伸。</p>
+                                    </div>
+                                    <div class="h-px bg-slate-200 dark:bg-slate-700"></div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">磁贴布局预设</label>
+                                        <select id="layout-preset-select" class="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-slate-700 dark:text-slate-200" onchange="setLayoutPreset(this.value)">
+                                            <option value="compact" ${displayConfig.layoutPreset === 'compact' ? 'selected' : ''}>紧凑（5列）</option>
+                                            <option value="balanced" ${displayConfig.layoutPreset === 'balanced' ? 'selected' : ''}>平衡（4列）</option>
+                                            <option value="showcase" ${displayConfig.layoutPreset === 'showcase' ? 'selected' : ''}>展示（3列）</option>
+                                            <option value="custom" ${displayConfig.layoutPreset === 'custom' ? 'selected' : ''}>自定义</option>
+                                        </select>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-2 ${displayConfig.layoutPreset === 'custom' ? '' : 'opacity-60'}">
+                                        <div>
+                                            <label class="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">每行磁贴数</label>
+                                            <input id="layout-custom-cols" type="number" min="1" max="12" value="${displayConfig.customCols || 4}" oninput="updateLayoutCustom('customCols', this.value)" class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm">
+                                        </div>
+                                        <div>
+                                            <label class="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">磁贴间距(px)</label>
+                                            <input id="layout-custom-gap" type="number" min="0" max="120" value="${displayConfig.customGap || 24}" oninput="updateLayoutCustom('customGap', this.value)" class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm">
+                                        </div>
+                                        <div class="col-span-2">
+                                            <label class="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">磁贴比例</label>
+                                            <select id="layout-custom-aspect" onchange="updateLayoutCustom('customAspect', this.value)" class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm">
+                                                <option value="3/4" ${displayConfig.customAspect === '3/4' ? 'selected' : ''}>3:4（竖版）</option>
+                                                <option value="4/5" ${displayConfig.customAspect === '4/5' ? 'selected' : ''}>4:5</option>
+                                                <option value="1/1" ${displayConfig.customAspect === '1/1' ? 'selected' : ''}>1:1（方形）</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                    </div>
+
+                                    <div class="space-y-4">
+                                        <h3 class="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4"></i>AI 分析配置</h3>
+                                        <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-4">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">API Host</label>
+                                        <input type="text" id="ai-host-input" value="${config.apiHost || 'https://api.openai.com/v1'}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="https://api.openai.com/v1">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">API Key</label>
+                                        <input type="password" id="ai-key-input" value="${config.apiKey || ''}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="sk-...">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">模型名称 (Model)</label>
+                                        <input type="text" id="ai-model-input" value="${config.model || 'gpt-4o'}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="gpt-4o">
+                                    </div>
+                                            <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">右侧仅负责 AI 接口配置，左侧负责显示和布局设置。窗口会优先适配常见屏幕高度，滚动仅作为兜底。</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mt-4 flex gap-3 md:gap-4 flex-shrink-0 pt-4 border-t border-slate-200 dark:border-slate-700">
+                                <button onclick="closeAISettings()" class="btn-icon liquid-action flex-1 py-2.5 md:py-3 rounded-2xl text-slate-600 dark:text-slate-300 font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-sm">取消</button>
+                                <button onclick="saveAISettings()" class="btn-icon liquid-action-tint flex-1 py-2.5 md:py-3 rounded-2xl bg-indigo-600 text-white font-bold shadow-xl hover:bg-indigo-500 hover:shadow-indigo-500/40 transition-all text-sm">保存设置</button>
+                            </div>
+                        </div>
+                    </div>`;
+                lucide.createIcons(aiContainer);
+            } else {
+                aiContainer.innerHTML = '';
+            }
+
+            // Render Artist Modal (Independent of AI Settings)
+            if (state.isModalOpen) {
+                container.innerHTML = `
+                    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; z-index: 50; padding: 1rem;" class="animate-fade-in">
+                        <div class="absolute inset-0 bg-slate-900/30 dark:bg-black/60 backdrop-blur-md" onclick="handleCloseModal()"></div>
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-5 md:p-6 relative z-10 w-full max-w-7xl border dark:border-slate-700 max-h-[88vh] overflow-hidden flex flex-col">
+                            <button onclick="handleCloseModal()" class="btn-icon liquid-action absolute top-4 right-4 p-2 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            <h2 class="text-xl md:text-2xl font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2.5 flex-shrink-0 pr-10"><span class="w-2 h-7 bg-indigo-500 rounded-full"></span>${state.editingArtist ? '编辑图像' : '添加新图像'}</h2>
+                            <div class="overflow-y-auto flex-1 pr-1 custom-scrollbar">
+                                <div class="grid grid-cols-3 gap-5">
+                                    <!-- 左侧：基础信息 -->
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">显示名称 (Name)</label>
+                                            <div class="flex gap-2">
+                                                <input type="text" id="modal-artist-name" value="${state.formData.name}" oninput="handleModalFormInput('name', this.value)" class="flex-1 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: Mika Pikazo">
+                                                <button id="analyze-btn" onclick="analyzeArtistStyle()" title="AI 分析画风 (6字总结)" class="btn-icon liquid-action px-3 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors flex items-center justify-center border border-indigo-200 dark:border-indigo-800/50 shadow-sm">
+                                                    <i data-lucide="sparkles" class="w-4 h-4"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div><label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">Tag (必填)</label><input type="text" value="${state.formData.tag}" oninput="handleModalFormInput('tag', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm shadow-sm" placeholder="例如: mika pikazo"></div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">分类</label>
+                                            <div class="flex gap-2">
+                                                <select oninput="handleModalFormInput('category', this.value)" class="flex-1 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm">
+                                                    <option value="" ${!state.formData.category ? 'selected' : ''}>未分类</option>
+                                                    ${state.categories.map(cat => `<option value="${escapeHtml(cat)}" ${state.formData.category === cat ? 'selected' : ''}>${escapeHtml(cat)}</option>`).join('')}
+                                                </select>
+                                                <button type="button" onclick="addCategory()" class="btn-icon liquid-action px-3 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors border border-indigo-200 dark:border-indigo-800/50 shadow-sm" title="新增分类">
+                                                    <i data-lucide="plus-circle" class="w-4 h-4"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="flex items-center gap-3 cursor-pointer bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-red-300 dark:hover:border-red-800 transition-colors">
+                                                <input type="checkbox" ${state.formData.isNSFW ? 'checked' : ''} onchange="handleModalFormInput('isNSFW', this.checked)" class="w-4 h-4 text-red-500 bg-slate-100 border-slate-300 rounded focus:ring-red-500 dark:focus:ring-red-600 dark:ring-offset-slate-800 focus:ring-2 dark:bg-slate-700 dark:border-slate-600">
+                                                <div class="flex-1">
+                                                    <span class="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2"><i data-lucide="eye-off" class="w-4 h-4 text-red-500"></i>NSFW 内容</span>
+                                                    <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">标记后图片将被模糊处理</p>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">备注</label>
+                                            <textarea value="${state.formData.note || ''}" oninput="handleModalFormInput('note', this.value)" rows="2" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm resize-none" placeholder="添加关于此图像的备注信息...">${state.formData.note || ''}</textarea>
+                                        </div>
+                                    </div>
+                                    <!-- 中列：图片和提取操作 -->
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">卡片封面图 (点击上传)</label>
+                                            <div id="image-upload-container"></div>
+                                            <div class="mt-2.5">
+                                                <button id="modal-extract-btn" type="button" onclick="extractGenParamsFromImage()" class="btn-icon liquid-action-tint w-full mt-2 py-2.5 rounded-xl bg-emerald-500/90 text-white font-bold text-sm shadow-lg hover:bg-emerald-500 transition-all ${state.formData.imageUrl ? '' : 'opacity-50 cursor-not-allowed'}" ${state.formData.imageUrl ? '' : 'disabled'}>
+                                                    从图片读取参数
+                                                </button>
+                                                ${state.comfyWorkflowData ? `<button type="button" onclick="toggleComfyWorkflowViewer()" class="btn-icon liquid-action-tint w-full mt-2 py-2.5 rounded-xl bg-violet-500/90 text-white font-bold text-sm shadow-lg hover:bg-violet-500 transition-all flex items-center justify-center gap-2">
+                                                    <i data-lucide="workflow" class="w-4 h-4"></i>查看 ComfyUI 工作流
+                                                </button>` : ''}
+                                            </div>
+                                            <input type="file" id="modal-file-input" class="hidden" accept="image/*" onchange="handleModalFileSelect(event)">
+                                        </div>
+                                    </div>
+                                    <!-- 右列：AI绘画信息 -->
+                                    <div class="space-y-4">
+                                        <div class="pt-1">
+                                            <h3 class="text-sm font-bold text-indigo-600 dark:text-indigo-400 mb-3 flex items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4"></i>AI 绘画信息</h3>
+                                            <div class="grid grid-cols-2 gap-3">
+                                                <div class="col-span-2">
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">使用的绘画模型</label>
+                                                    <input type="text" id="modal-ai-model" value="${state.formData.aiModel || ''}" oninput="handleModalFormInput('aiModel', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: Stable Diffusion">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">画风 Tag</label>
+                                                    <input type="text" id="modal-style-tag" value="${state.formData.styleTag || ''}" oninput="handleModalFormInput('styleTag', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: 日系薄涂">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">角色 Tag</label>
+                                                    <input type="text" id="modal-character-tag" value="${state.formData.characterTag || ''}" oninput="handleModalFormInput('characterTag', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: 白发">
+                                                </div>
+                                                <div class="col-span-2">
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">服装 Tag</label>
+                                                    <input type="text" id="modal-clothing-tag" value="${state.formData.clothingTag || ''}" oninput="handleModalFormInput('clothingTag', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: 水手服">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">CFG Scale</label>
+                                                    <input type="text" value="${state.formData.cfgScale || ''}" oninput="handleModalFormInput('cfgScale', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: 7">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">Seed</label>
+                                                    <input type="text" value="${state.formData.seed || ''}" oninput="handleModalFormInput('seed', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: 123456789">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">Steps</label>
+                                                    <input type="text" value="${state.formData.steps || ''}" oninput="handleModalFormInput('steps', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: 28">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">Sampler</label>
+                                                    <input type="text" value="${state.formData.sampler || ''}" oninput="handleModalFormInput('sampler', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: DPM++ 2M Karras">
+                                                </div>
+                                                <div class="col-span-2">
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">Model Hash</label>
+                                                    <input type="text" value="${state.formData.modelHash || ''}" oninput="handleModalFormInput('modelHash', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: abc123def4">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-5 flex gap-3 flex-shrink-0 pt-4 border-t border-slate-200 dark:border-slate-700">
+                                <button onclick="handleCloseModal()" class="btn-icon liquid-action flex-1 py-2.5 rounded-xl text-slate-600 dark:text-slate-300 font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-sm">取消</button>
+                                <button id="modal-save-btn" onclick="handleSaveArtist()" class="btn-icon liquid-action-tint flex-1 py-2.5 rounded-xl bg-indigo-600 text-white font-bold text-sm shadow-xl hover:bg-indigo-500 hover:shadow-indigo-500/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed" ${!state.formData.tag.trim() ? 'disabled' : ''}>保存更改</button>
+                            </div>
+                        </div>
+                    </div>`;
+                updateModalImagePreviewDOM(); 
+            } else {
+                container.innerHTML = '';
+            }
+
+            // Render Preview Modal and Note Viewer
+            if (state.previewImage) {
+                previewContainer.innerHTML = `
+                    <div class="fixed inset-0 z-[80] bg-black/95 backdrop-blur-xl flex items-center justify-center p-6 animate-fade-in" onclick="closePreview()">
+                        <button onclick="closePreview()" class="absolute top-6 right-6 p-3 bg-white/10 hover:bg-white/20 text-white rounded-full transition-all z-50"><i data-lucide="x" class="w-8 h-8"></i></button>
+                        <div class="relative max-w-5xl max-h-full w-full flex items-center justify-center" onclick="event.stopPropagation()"><img src="${state.previewImage}" class="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl" /></div>
+                    </div>`;
+            } else if (state.viewingNote) {
+                previewContainer.innerHTML = `
+                    <div class="fixed inset-0 z-[90] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-fade-in" onclick="closeNoteViewer()">
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[2rem] shadow-2xl p-8 relative z-10 w-full max-w-lg border dark:border-slate-700" onclick="event.stopPropagation()">
+                            <button onclick="closeNoteViewer()" class="absolute top-6 right-6 p-2 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors"><i data-lucide="x" class="w-6 h-6"></i></button>
+                            <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-2 flex items-center gap-3 pr-10"><i data-lucide="file-text" class="w-6 h-6 text-amber-500"></i>${state.viewingNote.name}</h2>
+                            <p class="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-6">备注信息</p>
+                            <div class="bg-slate-50 dark:bg-slate-800/50 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                                <p class="text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed text-sm">${state.viewingNote.note || '暂无备注'}</p>
+                            </div>
+                        </div>
+                    </div>`;
+            } else {
+                previewContainer.innerHTML = '';
+            }
+
+            // Render Tag Selector
+            const tagContainer = document.getElementById('tag-selector-container');
+            if (state.tagSelector) {
+                const artist = state.liveArtists.find(a => a.id === state.tagSelector.id);
+                if (artist) {
+                    const tags = [];
+            if (artist.tag) tags.push({ type: 'tag', label: '图像 Tag', value: artist.tag, color: 'indigo' });
+                    if (artist.aiModel) tags.push({ type: 'aiModel', label: '模型', value: artist.aiModel, color: 'purple' });
+                    if (artist.styleTag) tags.push({ type: 'styleTag', label: '画风', value: artist.styleTag, color: 'pink' });
+                    if (artist.characterTag) tags.push({ type: 'characterTag', label: '角色', value: artist.characterTag, color: 'cyan' });
+                    if (artist.clothingTag) tags.push({ type: 'clothingTag', label: '服装', value: artist.clothingTag, color: 'amber' });
+
+                    const colorClasses = {
+                        indigo: 'bg-indigo-500 hover:bg-indigo-600',
+                        purple: 'bg-purple-500 hover:bg-purple-600',
+                        pink: 'bg-pink-500 hover:bg-pink-600',
+                        cyan: 'bg-cyan-500 hover:bg-cyan-600',
+                        amber: 'bg-amber-500 hover:bg-amber-600'
+                    };
+
+                    tagContainer.innerHTML = `
+                        <div class="fixed inset-0 z-[100]" onclick="closeTagSelector()">
+                            <div class="absolute bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in max-w-64" style="left: ${state.tagSelector.x}px; top: ${state.tagSelector.y}px;">
+                                <div class="px-4 py-3 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                                    <span class="text-sm font-bold text-slate-700 dark:text-slate-200">选择要复制的 Tag</span>
+                                    <button onclick="closeTagSelector()" class="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors"><i data-lucide="x" class="w-4 h-4 text-slate-500"></i></button>
+                                </div>
+                                <div class="p-2 space-y-1 max-h-60 overflow-y-auto custom-scrollbar">
+                                    ${tags.map(t => `
+                                        <button onclick="copySpecificTag('${artist.id}', '${t.type}', event)" class="w-full text-left px-4 py-2.5 rounded-xl text-sm text-white ${colorClasses[t.color]} hover:opacity-90 transition-all flex items-center gap-2">
+                                            <i data-lucide="${t.type === 'tag' ? 'tag' : t.type === 'aiModel' ? 'cpu' : 'palette'}" class="w-4 h-4"></i>
+                                            <span class="font-medium">${t.label}:</span>
+                                            <span class="truncate flex-1">${t.value}</span>
+                                        </button>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>`;
+                    lucide.createIcons(tagContainer);
+                }
+            } else {
+                tagContainer.innerHTML = '';
+            }
+
+            // Render ComfyUI Workflow Viewer
+            const comfyContainer = document.getElementById('comfy-workflow-container');
+            if (comfyContainer && state.showComfyWorkflow && state.comfyWorkflowData) {
+                const jsonStr = JSON.stringify(state.comfyWorkflowData, null, 2);
+                const escapedJson = jsonStr.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+                comfyContainer.innerHTML = `
+                    <div class="fixed inset-0 z-[95] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-fade-in" onclick="closeComfyWorkflowViewer()">
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[2rem] shadow-2xl p-6 relative z-10 w-full max-w-4xl border dark:border-slate-700 max-h-[85vh] flex flex-col" onclick="event.stopPropagation()">
+                            <button onclick="closeComfyWorkflowViewer()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            <h2 class="text-xl font-bold text-slate-800 dark:text-white mb-1 flex items-center gap-3 pr-10"><i data-lucide="workflow" class="w-5 h-5 text-violet-500"></i>ComfyUI 工作流</h2>
+                            <p class="text-xs text-slate-400 dark:text-slate-500 mb-4">从图片元数据中提取的完整工作流 JSON</p>
+                            <div class="flex gap-2 mb-3">
+                                <button onclick="navigator.clipboard.writeText(JSON.stringify(state.comfyWorkflowData, null, 2));showToast('工作流 JSON 已复制')" class="btn-icon liquid-action px-3 py-1.5 rounded-xl text-xs font-bold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 border border-violet-200 dark:border-violet-800/50 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition-colors flex items-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>复制 JSON</button>
+                            </div>
+                            <div class="flex-1 min-h-0 overflow-auto custom-scrollbar bg-slate-50/80 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 p-4">
+                                <pre class="text-xs font-mono text-slate-700 dark:text-slate-300 whitespace-pre leading-relaxed">${escapedJson}</pre>
+                            </div>
+                        </div>
+                    </div>`;
+            } else if (comfyContainer) {
+                comfyContainer.innerHTML = '';
+            }
+
+            lucide.createIcons();
+        };
+
+        (async () => {
+            updateState({ isDataLoading: true });
+            applyTheme();
+            try {
+                const savedMeta = localStorage.getItem(METADATA_KEY);
+                const parsedMeta = savedMeta ? JSON.parse(savedMeta) : INITIAL_DATA;
+                const imgMap = await getAllImagesFromIDB().catch(() => ({}));
+                const merged = normalizeArtistList(parsedMeta).map(a => ({
+                    ...a,
+                    imageUrl: imgMap[a.id] || a.imageUrl || ''
+                }));
+                const savedCategoriesRaw = JSON.parse(localStorage.getItem(CATEGORY_KEY) || '[]');
+                const savedCategories = normalizeCategoryList(savedCategoriesRaw);
+                const categories = normalizeCategoryList([...savedCategories, ...buildKnownCategoriesFromArtists(merged)]);
+                updateState({ liveArtists: merged, categories, activeCategory: 'all', isDataLoading: false });
+            } catch (e) {
+                const fallbackArtists = normalizeArtistList(INITIAL_DATA);
+                const fallbackCategories = buildKnownCategoriesFromArtists(fallbackArtists);
+                updateState({ liveArtists: fallbackArtists, categories: fallbackCategories, activeCategory: 'all', isDataLoading: false });
+            }
+        })();
+    </script>
+</body>
+</html>
