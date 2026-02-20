@@ -1573,7 +1573,7 @@
         let state = {
             liveArtists: [],
             categories: [],
-            activeCategory: 'all',
+            activeCategory: 'uncategorized',
             selectedArtists: {}, 
             searchQuery: '',
             sortMode: 'default', 
@@ -1772,10 +1772,56 @@
 
         window.setActiveCategory = (categoryValue) => {
             const raw = String(categoryValue || 'all');
-            const normalized = raw === 'all' ? 'all' : normalizeCategoryName(raw);
-            if (normalized !== 'all' && !state.categories.includes(normalized)) return;
+            const normalized = (raw === 'all' || raw === 'uncategorized') ? raw : normalizeCategoryName(raw);
+            if (normalized !== 'all' && normalized !== 'uncategorized' && !state.categories.includes(normalized)) return;
             updateState({ activeCategory: normalized });
         };
+
+        let draggedCategoryIndex = null;
+
+        window.handleCategoryDragStart = (e, index) => {
+            draggedCategoryIndex = index;
+            e.dataTransfer.effectAllowed = 'move';
+            e.target.style.opacity = '0.5';
+        };
+
+        window.handleCategoryDragOver = (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            return false;
+        };
+
+        window.handleCategoryDragEnter = (e) => {
+            e.preventDefault();
+            const btn = e.target.closest('button');
+            if (btn) btn.classList.add('scale-105', 'ring-2', 'ring-indigo-400');
+        };
+
+        window.handleCategoryDragLeave = (e) => {
+            const btn = e.target.closest('button');
+            if (btn) btn.classList.remove('scale-105', 'ring-2', 'ring-indigo-400');
+        };
+
+        window.handleCategoryDrop = (e, targetIndex) => {
+            e.stopPropagation();
+            const btn = e.target.closest('button');
+            if (btn) btn.classList.remove('scale-105', 'ring-2', 'ring-indigo-400');
+            
+            if (draggedCategoryIndex !== null && draggedCategoryIndex !== targetIndex) {
+                const newCategories = [...state.categories];
+                const [draggedItem] = newCategories.splice(draggedCategoryIndex, 1);
+                newCategories.splice(targetIndex, 0, draggedItem);
+                updateState({ categories: newCategories });
+            }
+            draggedCategoryIndex = null;
+            return false;
+        };
+        
+        window.addEventListener('dragend', (e) => {
+            if (e.target.tagName === 'BUTTON') {
+                e.target.style.opacity = '1';
+            }
+        });
 
         window.addCategory = () => {
             const input = prompt('请输入新分类名称');
@@ -1818,7 +1864,7 @@
                 return { ...artist, category: '' };
             });
             const nextCategories = state.categories.filter(cat => cat !== targetCategory);
-            const nextActiveCategory = state.activeCategory === targetCategory ? 'all' : state.activeCategory;
+            const nextActiveCategory = state.activeCategory === targetCategory ? 'uncategorized' : state.activeCategory;
 
             if (state.isModalOpen && normalizeCategoryName(state.formData.category) === targetCategory) {
                 state.formData.category = '';
@@ -2270,9 +2316,9 @@
                         ...buildKnownCategoriesFromArtists(newArtists)
                     ]);
 
-                    const nextActiveCategory = state.activeCategory === 'all' || mergedCategories.includes(state.activeCategory)
-                        ? state.activeCategory
-                        : 'all';
+            const nextActiveCategory = (state.activeCategory === 'all' || state.activeCategory === 'uncategorized' || mergedCategories.includes(state.activeCategory))
+                ? state.activeCategory
+                : 'uncategorized';
 
                     updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory });
                     if (addedCount > 0) {
@@ -2439,9 +2485,9 @@
                 ...state.categories,
                 ...buildKnownCategoriesFromArtists(newArtists)
             ]);
-            const nextActiveCategory = state.activeCategory === 'all' || mergedCategories.includes(state.activeCategory)
+            const nextActiveCategory = (state.activeCategory === 'all' || state.activeCategory === 'uncategorized' || mergedCategories.includes(state.activeCategory))
                 ? state.activeCategory
-                : 'all';
+                : 'uncategorized';
 
             updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory, isModalOpen: false, editingArtist: null });
         };
@@ -2469,9 +2515,9 @@
                         ...state.categories,
                         ...buildKnownCategoriesFromArtists(newArtists)
                     ]);
-                    const nextActiveCategory = state.activeCategory === 'all' || mergedCategories.includes(state.activeCategory)
-                        ? state.activeCategory
-                        : 'all';
+            const nextActiveCategory = (state.activeCategory === 'all' || state.activeCategory === 'uncategorized' || mergedCategories.includes(state.activeCategory))
+                ? state.activeCategory
+                : 'uncategorized';
 
                     updateState({ 
                         liveArtists: newArtists, 
@@ -2669,11 +2715,22 @@
                 ${renderFilterBtn('favorite', '收藏', 'heart', false)}
                 <div class="border-l border-slate-300 dark:border-slate-600 mx-2 h-6 self-center"></div>
                 <button onclick="setActiveCategory('all')" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${state.activeCategory === 'all' ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md' : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50'}"><i data-lucide="layout-grid" class="w-4 h-4"></i><span>全部分类</span></button>
-                ${state.categories.map(cat => {
+                <button onclick="setActiveCategory('uncategorized')" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${state.activeCategory === 'uncategorized' ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md' : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50'}"><i data-lucide="folder-minus" class="w-4 h-4"></i><span>未分类</span></button>
+                ${state.categories.map((cat, index) => {
                     const chipToneClass = state.activeCategory === cat
                         ? 'bg-white dark:bg-slate-800 border-indigo-200 dark:border-indigo-900 text-indigo-600 dark:text-indigo-400 shadow-md'
                         : 'glass-card border-transparent text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-slate-700/50';
-                    return `<button onclick="setActiveCategory('${escapeJsSingleQuote(cat)}')" oncontextmenu="handleCategoryContextMenu('${escapeJsSingleQuote(cat)}', event)" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${chipToneClass}" title="右键删除分类"><i data-lucide="tag" class="w-4 h-4"></i><span>${escapeHtml(cat)}</span></button>`;
+                    return `<button 
+                        draggable="true" 
+                        ondragstart="handleCategoryDragStart(event, ${index})"
+                        ondragover="handleCategoryDragOver(event)"
+                        ondrop="handleCategoryDrop(event, ${index})"
+                        ondragenter="handleCategoryDragEnter(event)"
+                        ondragleave="handleCategoryDragLeave(event)"
+                        onclick="setActiveCategory('${escapeJsSingleQuote(cat)}')" 
+                        oncontextmenu="handleCategoryContextMenu('${escapeJsSingleQuote(cat)}', event)" 
+                        class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap ${chipToneClass}" 
+                        title="拖动排序，右键删除"><i data-lucide="tag" class="w-4 h-4"></i><span>${escapeHtml(cat)}</span></button>`;
                 }).join('')}
                 <button onclick="addCategory()" class="btn-icon flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm font-bold border transition-all whitespace-nowrap glass-card border-dashed border-indigo-300/70 dark:border-indigo-700/70 text-indigo-600 dark:text-indigo-300 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20"><i data-lucide="plus-circle" class="w-4 h-4"></i><span>新增分类</span></button>
             `;
@@ -2726,7 +2783,11 @@
                 a.tag.toLowerCase().includes(state.searchQuery.toLowerCase())
             );
             if (state.activeCategory !== 'all') {
-                list = list.filter(a => normalizeCategoryName(a.category) === state.activeCategory);
+                if (state.activeCategory === 'uncategorized') {
+                    list = list.filter(a => !a.category);
+                } else {
+                    list = list.filter(a => normalizeCategoryName(a.category) === state.activeCategory);
+                }
             }
             if (state.sortMode === 'favorite') list = list.filter(a => a.isFavorite);
             const sm = state.sortMode;
@@ -3172,11 +3233,11 @@
                 const savedCategoriesRaw = JSON.parse(localStorage.getItem(CATEGORY_KEY) || '[]');
                 const savedCategories = normalizeCategoryList(savedCategoriesRaw);
                 const categories = normalizeCategoryList([...savedCategories, ...buildKnownCategoriesFromArtists(merged)]);
-                updateState({ liveArtists: merged, categories, activeCategory: 'all', isDataLoading: false });
+                updateState({ liveArtists: merged, categories, activeCategory: 'uncategorized', isDataLoading: false });
             } catch (e) {
                 const fallbackArtists = normalizeArtistList(INITIAL_DATA);
                 const fallbackCategories = buildKnownCategoriesFromArtists(fallbackArtists);
-                updateState({ liveArtists: fallbackArtists, categories: fallbackCategories, activeCategory: 'all', isDataLoading: false });
+                updateState({ liveArtists: fallbackArtists, categories: fallbackCategories, activeCategory: 'uncategorized', isDataLoading: false });
             }
         })();
     </script>
