@@ -3117,11 +3117,39 @@
              localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(newConfig));
              localStorage.setItem(DISPLAY_CONFIG_KEY, JSON.stringify(newDisplayConfig));
              showToast('设置已保存');
-         };
+          };
+
+        const AI_TITLE_PRESETS = {
+            style: {
+                label: '风格汇总标题',
+                prompt: '请只基于这张图片的视觉风格生成一个中文标题。要求：不超过10个中文字符，不要标点，不要解释。'
+            },
+            clothing: {
+                label: '服饰汇总标题',
+                prompt: '请只基于这张图片中的服饰与穿搭要素生成一个中文标题。要求：不超过10个中文字符，不要标点，不要解释。'
+            },
+            full: {
+                label: '整图汇总标题',
+                prompt: '请基于整张图片的主体、氛围、风格与服饰信息综合生成一个中文标题。要求：不超过10个中文字符，不要标点，不要解释。'
+            }
+        };
+
+        const normalizeAiTitleOutput = (rawText = '') => {
+            const text = String(rawText || '')
+                .replace(/[\r\n]+/g, ' ')
+                .replace(/[“”"'`]/g, '')
+                .replace(/[。！？!?,，；;：:]+/g, ' ')
+                .trim();
+            if (!text) return '';
+            return text.slice(0, 10).trim();
+        };
 
         window.analyzeArtistStyle = async () => {
             const { imageUrl } = state.formData;
             const config = state.aiConfig || {};
+            const presetSelect = document.getElementById('analyze-preset-select');
+            const presetKey = presetSelect?.value || 'style';
+            const preset = AI_TITLE_PRESETS[presetKey] || AI_TITLE_PRESETS.style;
             
             if (!imageUrl) { showToast('请先上传图片'); return; }
             if (!config.apiKey) { showToast('请先配置 AI Key'); window.openAISettings(); return; }
@@ -3144,7 +3172,7 @@
                             {
                                 role: "user",
                                 content: [
-                                    { type: "text", text: "请分析这张图片的画风，并用精准的六个中文字符总结（例如：'赛博朋克霓虹'、'厚涂油画质感'）。请直接返回这六个字，不要包含任何标点或其他内容。" },
+                                    { type: "text", text: preset.prompt },
                                     { type: "image_url", image_url: { url: imageUrl } }
                                 ]
                             }
@@ -3159,14 +3187,14 @@
                 }
 
                 const data = await response.json();
-                const content = data.choices[0].message.content.trim();
-                const cleanContent = content.replace(/[^\u4e00-\u9fa5]/g, '').slice(0, 6); // Extract first 6 Chinese chars
+                const content = String(data?.choices?.[0]?.message?.content || '').trim();
+                const cleanContent = normalizeAiTitleOutput(content);
 
                 if (cleanContent) {
                     state.formData.name = cleanContent;
                     const nameInput = document.getElementById('modal-artist-name');
                     if (nameInput) nameInput.value = cleanContent;
-                    showToast(`分析成功: ${cleanContent}`);
+                    showToast(`${preset.label}: ${cleanContent}`);
                 } else {
                     showToast('分析结果为空');
                 }
@@ -3609,7 +3637,12 @@
                                             <label class="block text-xs font-bold text-slate-400 dark:text-slate-400 uppercase tracking-wider mb-1.5">显示名称 (Name)</label>
                                             <div class="flex gap-2">
                                                 <input type="text" id="modal-artist-name" value="${state.formData.name}" oninput="handleModalFormInput('name', this.value)" class="flex-1 px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: Mika Pikazo">
-                                                <button id="analyze-btn" onclick="analyzeArtistStyle()" title="AI 分析画风 (6字总结)" class="btn-icon liquid-action px-3 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors flex items-center justify-center border border-indigo-200 dark:border-indigo-800/50 shadow-sm">
+                                                <select id="analyze-preset-select" class="px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all shadow-sm">
+                                                    <option value="style">风格标题</option>
+                                                    <option value="clothing">服饰标题</option>
+                                                    <option value="full">整图标题</option>
+                                                </select>
+                                                <button id="analyze-btn" onclick="analyzeArtistStyle()" title="AI 识别生成标题" class="btn-icon liquid-action px-3 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition-colors flex items-center justify-center border border-indigo-200 dark:border-indigo-800/50 shadow-sm">
                                                     <i data-lucide="sparkles" class="w-4 h-4"></i>
                                                 </button>
                                             </div>

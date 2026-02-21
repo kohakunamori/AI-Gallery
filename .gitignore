@@ -16,3 +16,7 @@ skills/
 
 # Test images (keep example if needed)
 *.png
+
+# Local reference / temp files
+AI-Image-Metadata-Editor.html
+nul
