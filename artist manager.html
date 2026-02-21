@@ -1033,10 +1033,44 @@
                     } else if (chunk.type === 'iTXt') {
                         const parsed = await decodePngITXt(chunk.data);
                         if (parsed?.keyword) text[parsed.keyword] = parsed.text;
+                    } else if (chunk.type === 'eXIf') {
+                        Object.assign(text, readWebpExifTextEntries(chunk.data));
                     }
                 } catch (_) {}
             }
             return text;
+        };
+
+        const decodeExifUserComment = (raw) => {
+            if (!(raw instanceof Uint8Array) || !raw.length) return '';
+            const ascii = new TextDecoder('ascii');
+            const prefix = ascii.decode(raw.slice(0, 8));
+            const payload = raw.slice(8);
+            const stripNul = (s) => String(s || '').replace(/\0+$/, '').trim();
+            const nullRatio = (s) => {
+                const txt = String(s || '');
+                if (!txt.length) return 1;
+                let nul = 0;
+                for (const ch of txt) if (ch === '\0') nul++;
+                return nul / txt.length;
+            };
+
+            if (prefix.startsWith('ASCII') || prefix.startsWith('JIS')) {
+                return stripNul(ascii.decode(payload));
+            }
+
+            if (prefix.startsWith('UNICODE')) {
+                try {
+                    const be = stripNul(new TextDecoder('utf-16be').decode(payload));
+                    if (be && nullRatio(be) < 0.2) return be;
+                } catch (_) {}
+                try {
+                    const le = stripNul(new TextDecoder('utf-16le').decode(payload));
+                    if (le) return le;
+                } catch (_) {}
+            }
+
+            return stripNul(ascii.decode(raw));
         };
 
         const readJpegUserComment = (buffer) => {
@@ -1067,13 +1101,8 @@
                         const valOffset = get32(entryOffset + 8);
                         const start = tiffStart + valOffset;
                         const raw = new Uint8Array(buffer, start, count);
-                        const prefix = new TextDecoder().decode(raw.slice(0, 8));
-                        if (prefix.startsWith('ASCII')) return new TextDecoder('utf-8').decode(raw.slice(8)).replace(/\0+$/, '');
-                        if (prefix.startsWith('UNICODE')) {
-                            const bytes = raw.slice(8);
-                            try { return new TextDecoder('utf-16le').decode(bytes).replace(/\0+$/, ''); } catch (_) {}
-                            try { return new TextDecoder('utf-16be').decode(bytes).replace(/\0+$/, ''); } catch (_) {}
-                        }
+                        const decoded = decodeExifUserComment(raw);
+                        if (decoded) return decoded;
                     }
                 }
                 offset += 2 + size;
@@ -1117,6 +1146,106 @@
             return '';
         };
 
+        const readWebpExifTextEntries = (exifData) => {
+            if (!(exifData instanceof Uint8Array) || !exifData.length) return {};
+            const entries = {};
+            const decoder = new TextDecoder('utf-8');
+            const isExifPrefix = exifData.length >= 6
+                && exifData[0] === 0x45 && exifData[1] === 0x78 && exifData[2] === 0x69 && exifData[3] === 0x66
+                && exifData[4] === 0x00 && exifData[5] === 0x00;
+            const tiffOffset = isExifPrefix ? 6 : 0;
+            if (exifData.length - tiffOffset < 8) return entries;
+
+            const view = new DataView(exifData.buffer, exifData.byteOffset + tiffOffset, exifData.byteLength - tiffOffset);
+            const byteOrder = view.getUint16(0, false);
+            const isLE = byteOrder === 0x4949;
+            if (!isLE && byteOrder !== 0x4D4D) return entries;
+            const get16 = (offset) => view.getUint16(offset, isLE);
+            const get32 = (offset) => view.getUint32(offset, isLE);
+
+            const totalLength = view.byteLength;
+            const safeSlice = (start, length) => {
+                if (start < 0 || length <= 0 || start >= totalLength) return new Uint8Array();
+                const end = Math.min(totalLength, start + length);
+                return new Uint8Array(view.buffer, view.byteOffset + start, Math.max(0, end - start));
+            };
+            const decodeAscii = (bytes) => {
+                if (!bytes.length) return '';
+                let end = bytes.indexOf(0x00);
+                if (end < 0) end = bytes.length;
+                return decoder.decode(bytes.slice(0, end)).trim();
+            };
+
+            const readAsciiByEntry = (count, valueOffsetField) => {
+                const len = Math.max(0, Number(count || 0));
+                if (!len) return '';
+                if (len <= 4) {
+                    const inline = new Uint8Array(4);
+                    if (isLE) {
+                        inline[0] = valueOffsetField & 0xFF;
+                        inline[1] = (valueOffsetField >> 8) & 0xFF;
+                        inline[2] = (valueOffsetField >> 16) & 0xFF;
+                        inline[3] = (valueOffsetField >> 24) & 0xFF;
+                    } else {
+                        inline[3] = valueOffsetField & 0xFF;
+                        inline[2] = (valueOffsetField >> 8) & 0xFF;
+                        inline[1] = (valueOffsetField >> 16) & 0xFF;
+                        inline[0] = (valueOffsetField >> 24) & 0xFF;
+                    }
+                    return decodeAscii(inline.slice(0, len));
+                }
+                return decodeAscii(safeSlice(valueOffsetField, len));
+            };
+
+            const parseIfd = (ifdOffset, visitor) => {
+                if (!Number.isFinite(ifdOffset) || ifdOffset < 0 || ifdOffset + 2 > totalLength) return;
+                const count = get16(ifdOffset);
+                for (let i = 0; i < count; i++) {
+                    const entryOffset = ifdOffset + 2 + i * 12;
+                    if (entryOffset + 12 > totalLength) break;
+                    const tag = get16(entryOffset);
+                    const type = get16(entryOffset + 2);
+                    const itemCount = get32(entryOffset + 4);
+                    const valueOffsetField = get32(entryOffset + 8);
+                    visitor({ tag, type, itemCount, valueOffsetField });
+                }
+            };
+
+            if (get16(2) !== 0x002A) return entries;
+            const ifd0Offset = get32(4);
+            let exifIfdOffset = null;
+
+            parseIfd(ifd0Offset, ({ tag, type, itemCount, valueOffsetField }) => {
+                if (tag === 0x8769) {
+                    exifIfdOffset = valueOffsetField;
+                    return;
+                }
+                if (type !== 2) return;
+                const value = readAsciiByEntry(itemCount, valueOffsetField);
+                if (!value) return;
+                if (tag === 0x010E) {
+                    entries.image_description = value;
+                    entries.image_descriptiion = value;
+                } else if (tag === 0x010F) {
+                    entries.camera_manufacturer = value;
+                } else if (tag === 0x0110) {
+                    entries.camera_model = value;
+                }
+            });
+
+            if (Number.isFinite(exifIfdOffset)) {
+                parseIfd(exifIfdOffset, ({ tag, type, itemCount, valueOffsetField }) => {
+                    if (tag !== 0x9286 || type !== 7) return;
+                    const raw = safeSlice(valueOffsetField, itemCount);
+                    if (!raw.length) return;
+                    const decoded = decodeExifUserComment(raw);
+                    if (decoded) entries.user_comment = decoded;
+                });
+            }
+
+            return entries;
+        };
+
         const readWebpMetadata = (buffer) => {
             const chunks = parseWebPChunks(buffer);
             const out = {};
@@ -1142,6 +1271,7 @@
                     return merged.buffer;
                 })());
                 if (userComment) out.user_comment = userComment;
+                Object.assign(out, readWebpExifTextEntries(exifView));
             }
             return out;
         };
@@ -1199,12 +1329,26 @@
         };
 
         const parseJSONLoose = (input) => {
+            if (input && typeof input === 'object') return input;
             if (typeof input !== 'string') return null;
             const raw = String(input || '');
             const withoutBom = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
-            const normalized = withoutBom.replaceAll('\0', '').trim();
+            const normalized = withoutBom
+                .replaceAll('\0', '')
+                .replace(/\bNaN\b/g, 'null')
+                .replace(/\b-?Infinity\b/g, 'null')
+                .trim();
             if (!normalized) return null;
-            try { return JSON.parse(normalized); } catch (_) {}
+            try {
+                const first = JSON.parse(normalized);
+                if (typeof first === 'string') {
+                    const nested = String(first).trim();
+                    if ((nested.startsWith('{') && nested.endsWith('}')) || (nested.startsWith('[') && nested.endsWith(']'))) {
+                        try { return JSON.parse(nested); } catch (_) {}
+                    }
+                }
+                return first;
+            } catch (_) {}
             const candidate = extractFirstJSONObject(normalized);
             if (candidate) {
                 try { return JSON.parse(candidate); } catch (_) {}
@@ -1217,6 +1361,41 @@
                 } catch (_) {}
             }
             return null;
+        };
+
+        const unwrapNestedJsonFields = (input, maxDepth = 3) => {
+            const out = parseJSONLoose(input);
+            if (!out || typeof out !== 'object' || maxDepth <= 0) return out;
+            const jsonishKeys = [
+                'prompt', 'workflow', 'generation_data',
+                'extraMetadata', 'metadata',
+                'user_comment', 'usercomment',
+                'description', 'camera_manufacturer',
+                'image_descriptiion', 'image_description'
+            ];
+            for (const key of jsonishKeys) {
+                const value = out[key];
+                if (!value || typeof value !== 'string') continue;
+                const parsed = parseJSONLoose(value);
+                if (parsed && typeof parsed === 'object') {
+                    out[key] = parsed;
+                }
+            }
+            if (typeof out.extraMetadata === 'string') {
+                const parsedExtra = parseJSONLoose(out.extraMetadata);
+                if (parsedExtra && typeof parsedExtra === 'object') {
+                    out.extraMetadata = parsedExtra;
+                    Object.assign(out, parsedExtra);
+                }
+            }
+            if (maxDepth > 1) {
+                for (const key of ['prompt', 'workflow', 'generation_data']) {
+                    if (out[key] && typeof out[key] === 'object') {
+                        out[key] = unwrapNestedJsonFields(out[key], maxDepth - 1) || out[key];
+                    }
+                }
+            }
+            return out;
         };
 
         const getA1111FieldsFromText = (metaText = '') => {
@@ -1235,21 +1414,118 @@
             };
         };
 
-        const getComfyGenFields = (generationDataText = '') => {
-            const md = parseJSONLoose(generationDataText);
+        const hasA1111LikeParams = (metaText = '') => {
+            const parsed = getA1111FieldsFromText(metaText);
+            const nonEmptyCount = Object.values(parsed).filter((v) => String(v || '').trim()).length;
+            return nonEmptyCount >= 2;
+        };
+
+        const toComfyNodeLike = (node) => {
+            if (!node || typeof node !== 'object') return null;
+            if (node.class_type || node.inputs) return node;
+            if (node.type || node.node_type) {
+                const classType = String(node.class_type || node.type || node.node_type || '');
+                const mappedInputs = node.inputs && typeof node.inputs === 'object' ? { ...node.inputs } : {};
+                const widgets = Array.isArray(node.widgets_values) ? node.widgets_values : [];
+
+                if (!Object.keys(mappedInputs).length && widgets.length) {
+                    if (/ksampler/i.test(classType)) {
+                        if (widgets[0] !== undefined) mappedInputs.seed = widgets[0];
+                        if (widgets[2] !== undefined) mappedInputs.steps = widgets[2];
+                        if (widgets[3] !== undefined) mappedInputs.cfg = widgets[3];
+                        if (widgets[4] !== undefined) mappedInputs.sampler_name = widgets[4];
+                        if (widgets[5] !== undefined) mappedInputs.scheduler = widgets[5];
+                    } else if (/checkpointloader|checkpoint loader/i.test(classType)) {
+                        if (widgets[0] !== undefined) mappedInputs.ckpt_name = widgets[0];
+                    } else if (/emptylatentimage|latent/i.test(classType)) {
+                        if (widgets[0] !== undefined) mappedInputs.width = widgets[0];
+                        if (widgets[1] !== undefined) mappedInputs.height = widgets[1];
+                    } else if (/cliptextencode|text/i.test(classType)) {
+                        if (widgets[0] !== undefined) mappedInputs.text = widgets[0];
+                    }
+                }
+
+                return {
+                    ...node,
+                    class_type: classType,
+                    inputs: mappedInputs
+                };
+            }
+            return null;
+        };
+
+        const isComfyNodeLike = (node) => !!toComfyNodeLike(node);
+
+        const normalizeComfyGraph = (input) => {
+            const unwrapped = unwrapNestedJsonFields(input, 2);
+            if (!unwrapped || typeof unwrapped !== 'object') return null;
+            if (Array.isArray(unwrapped)) {
+                const mapped = {};
+                unwrapped.forEach((rawNode, index) => {
+                    const node = toComfyNodeLike(rawNode);
+                    if (!node) return;
+                    const id = node.id ?? node.node_id ?? index;
+                    mapped[String(id)] = node;
+                });
+                return Object.keys(mapped).length ? mapped : null;
+            }
+
+            if (isComfyNodeLike(unwrapped)) return { '0': toComfyNodeLike(unwrapped) };
+
+            const promptGraph = normalizeComfyGraph(unwrapped.prompt);
+            if (promptGraph) return promptGraph;
+            const workflowGraph = normalizeComfyGraph(unwrapped.workflow);
+            if (workflowGraph) return workflowGraph;
+            const nodesGraph = normalizeComfyGraph(unwrapped.nodes);
+            if (nodesGraph) return nodesGraph;
+
+            const entries = Object.entries(unwrapped);
+            const mapped = {};
+            for (const [id, rawNode] of entries) {
+                const node = toComfyNodeLike(rawNode);
+                if (node) mapped[String(id)] = node;
+            }
+            return Object.keys(mapped).length ? mapped : null;
+        };
+
+        const getComfyGenFields = (generationDataInput = '') => {
+            const generationText = typeof generationDataInput === 'string' ? generationDataInput : JSON.stringify(generationDataInput || '');
+            let md = typeof generationDataInput === 'object' && generationDataInput
+                ? unwrapNestedJsonFields(generationDataInput)
+                : unwrapNestedJsonFields(generationText);
             if (!md || typeof md !== 'object') return {};
             return {
-                steps: md.steps ? String(md.steps) : '',
-                sampler: md.samplerName || '',
-                cfgScale: md.cfgScale ? String(md.cfgScale) : '',
-                seed: md.seed ? String(md.seed) : '',
-                aiModel: md.baseModel?.modelFileName || '',
-                modelHash: md.baseModel?.hash || '',
+                steps: md.steps !== undefined && md.steps !== null ? String(md.steps) : '',
+                sampler: String(md.samplerName || md.sampler || md.sampler_name || '').trim(),
+                cfgScale: md.cfgScale !== undefined && md.cfgScale !== null
+                    ? String(md.cfgScale)
+                    : (md.cfg !== undefined && md.cfg !== null ? String(md.cfg) : (md.guidance !== undefined && md.guidance !== null ? String(md.guidance) : '')),
+                seed: md.seed !== undefined && md.seed !== null
+                    ? String(md.seed)
+                    : (md.noise_seed !== undefined && md.noise_seed !== null ? String(md.noise_seed) : ''),
+                aiModel: String(
+                    md.baseModel?.modelFileName ||
+                    md.baseModel?.name ||
+                    md.model?.modelFileName ||
+                    md.model?.name ||
+                    md.model ||
+                    md.ckpt_name ||
+                    md.base_ckpt_name ||
+                    md.unet_name ||
+                    ''
+                ).trim(),
+                modelHash: String(
+                    md.baseModel?.hash ||
+                    md.model?.hash ||
+                    md.modelHash ||
+                    ''
+                ).trim(),
             };
         };
 
         const getComfyPromptFields = (promptText = '') => {
-            const graph = parseJSONLoose(promptText);
+            const parsed = parseJSONLoose(promptText);
+            const graph = normalizeComfyGraph(parsed);
             const textFallback = String(promptText || '');
 
             const normalizeSeedLike = (seedRaw) => {
@@ -1328,11 +1604,11 @@
             };
             const fromGraph = {
                 steps: firstFromNodes(/scheduler|sampler/, ['steps']),
-                sampler: firstFromNodes(/scheduler|sampler/, ['sampler_name']),
+                sampler: firstFromNodes(/scheduler|sampler/, ['sampler_name', 'sampler']),
                 cfgScale: firstFromNodes(/guidance|sampler|cliptextencode/, ['guidance', 'cfg']),
                 seed: firstFromNodes(/randomnoise|sampler|seed/, ['noise_seed', 'seed']),
                 aiModel: firstFromNodes(/checkpoint|loader/, ['ckpt_name', 'base_ckpt_name', 'unet_name']),
-                modelHash: '',
+                modelHash: firstFromNodes(/checkpoint|loader/, ['model_hash', 'ckpt_hash', 'hash']),
             };
             const fallback = regexFallback();
             return {
@@ -1341,31 +1617,121 @@
                 cfgScale: fromGraph.cfgScale || fallback.cfgScale,
                 seed: fromGraph.seed || fallback.seed,
                 aiModel: fromGraph.aiModel || fallback.aiModel,
-                modelHash: '',
+                modelHash: fromGraph.modelHash || fallback.modelHash,
+            };
+        };
+
+        const getSwarmUIFields = (metadataText = '') => {
+            const md = parseJSONLoose(metadataText);
+            if (!md || typeof md !== 'object') return {};
+            const sui = md.sui_image_params;
+            if (!sui || typeof sui !== 'object') return {};
+            const modelName = md.sui_models?.find?.((m) => m?.param === 'model')?.name || sui.model || sui.sdxlcheckpointmodel || '';
+            const modelHash = md.sui_models?.find?.((m) => m?.param === 'model')?.hash || '';
+            return {
+                steps: sui.steps !== undefined && sui.steps !== null ? String(sui.steps) : '',
+                sampler: String(sui.sampler || '').trim(),
+                cfgScale: sui.cfgscale !== undefined && sui.cfgscale !== null ? String(sui.cfgscale) : '',
+                seed: sui.seed !== undefined && sui.seed !== null ? String(sui.seed) : '',
+                aiModel: String(modelName || '').trim(),
+                modelHash: String(modelHash || '').trim(),
             };
         };
 
         const getNovelAIFields = (commentText = '') => {
-            const md = parseJSONLoose(commentText);
+            if (!isLikelyNovelAIMetadata(commentText)) return {};
+            const md = unwrapNestedJsonFields(commentText);
             if (!md || typeof md !== 'object') return {};
+            const sourceText = String(md.source || md.software || md.generator || '').trim();
             return {
-                steps: md.steps ? String(md.steps) : '',
-                sampler: md.sampler || '',
-                cfgScale: md.scale ? String(md.scale) : '',
-                seed: md.seed ? String(md.seed) : '',
-                aiModel: md.source || '',
+                steps: md.steps !== undefined && md.steps !== null ? String(md.steps) : '',
+                sampler: String(md.sampler || md.sampling || '').trim(),
+                cfgScale: md.scale !== undefined && md.scale !== null ? String(md.scale) : '',
+                seed: md.seed !== undefined && md.seed !== null ? String(md.seed) : '',
+                aiModel: sourceText,
                 modelHash: '',
             };
         };
 
+        const isLikelyNovelAIMetadata = (input) => {
+            const md = unwrapNestedJsonFields(input);
+            if (!md || typeof md !== 'object') return false;
+            const source = String(md.source || md.software || md.generator || '').toLowerCase();
+            if (source.includes('novelai') || source.includes('nai diffusion')) return true;
+            return !!(md.uc !== undefined && (md.steps !== undefined || md.scale !== undefined || md.sampler !== undefined));
+        };
+
+        const detectGeneratorType = (rawMetadata = {}, comfyGraph = null) => {
+            if (comfyGraph && typeof comfyGraph === 'object' && Object.keys(comfyGraph).length) return 'COMFY';
+
+            const raw = Object.fromEntries(Object.entries(rawMetadata || {}).map(([k, v]) => [String(k || '').toLowerCase(), v]));
+            const candidates = [
+                raw.prompt,
+                raw.workflow,
+                raw.generation_data,
+                raw.parameters,
+                raw.user_comment,
+                raw.usercomment,
+                raw.comment,
+                raw.description,
+                raw.camera_manufacturer,
+                raw.image_descriptiion,
+                raw.image_description,
+                raw.software,
+                raw.source,
+            ].filter((v) => v !== undefined && v !== null && String(v).trim() !== '');
+
+            for (const candidate of candidates) {
+                if (isLikelyNovelAIMetadata(candidate)) return 'NAI';
+            }
+            for (const candidate of candidates) {
+                if (hasA1111LikeParams(candidate)) return 'SD';
+            }
+            return '';
+        };
+
         const normalizeRawMetadataToFields = (rawMetadata = {}) => {
             const raw = Object.fromEntries(Object.entries(rawMetadata).map(([k, v]) => [String(k || '').toLowerCase(), v]));
+            const nestedCandidates = [];
+            Object.values(raw).forEach((value) => {
+                const parsed = unwrapNestedJsonFields(value);
+                if (parsed && typeof parsed === 'object') {
+                    nestedCandidates.push(parsed);
+                    if (parsed.prompt) nestedCandidates.push(parsed.prompt);
+                    if (parsed.workflow) nestedCandidates.push(parsed.workflow);
+                    if (parsed.generation_data) nestedCandidates.push(parsed.generation_data);
+                }
+            });
+            const metadataCandidates = [
+                raw.prompt,
+                raw.workflow,
+                raw.generation_data,
+                raw.parameters,
+                raw.user_comment,
+                raw.usercomment,
+                raw.description,
+                raw.comment,
+                raw.camera_manufacturer,
+                raw.image_descriptiion,
+                raw.image_description,
+                ...nestedCandidates
+            ].filter((v) => (typeof v === 'string' && String(v).trim()) || (v && typeof v === 'object'));
+
             const sources = [
                 getComfyPromptFields(raw.prompt || raw.workflow || ''),
                 getComfyGenFields(raw.generation_data || ''),
+                getSwarmUIFields(raw.parameters || raw.user_comment || raw.usercomment || raw.description || ''),
                 getA1111FieldsFromText(raw.parameters || raw.user_comment || raw.usercomment || raw.description || ''),
                 getNovelAIFields(raw.comment || ''),
             ];
+
+            for (const candidate of metadataCandidates) {
+                sources.push(getComfyPromptFields(candidate));
+                sources.push(getComfyGenFields(candidate));
+                sources.push(getSwarmUIFields(candidate));
+                sources.push(getA1111FieldsFromText(candidate));
+                sources.push(getNovelAIFields(candidate));
+            }
 
             const merged = {};
             for (const source of sources) {
@@ -1387,6 +1753,9 @@
                     });
                 }
             }
+            const comfyGraph = detectComfyWorkflow(rawMetadata);
+            const generatorType = detectGeneratorType(rawMetadata, comfyGraph);
+            if (generatorType) merged.generatorType = generatorType;
             return merged;
         };
 
@@ -1395,6 +1764,10 @@
             Object.entries(incoming).forEach(([k, v]) => {
                 const next = String(v || '').trim();
                 if (!next) return;
+                if (k === 'generatorType') {
+                    if (['SD', 'COMFY', 'NAI'].includes(next)) merged[k] = next;
+                    return;
+                }
                 const curr = String(merged[k] || '').trim();
                 if (!curr) {
                     merged[k] = next;
@@ -1446,13 +1819,36 @@
 
         const detectComfyWorkflow = (rawMetadata = {}) => {
             const raw = Object.fromEntries(Object.entries(rawMetadata).map(([k, v]) => [String(k || '').toLowerCase(), v]));
-            const promptOrWorkflow = raw.prompt || raw.workflow || '';
-            if (!promptOrWorkflow) return null;
-            const parsed = parseJSONLoose(promptOrWorkflow);
-            if (!parsed || typeof parsed !== 'object') return null;
-            const entries = Object.entries(parsed);
-            const isComfy = entries.some(([, node]) => node && typeof node === 'object' && (node.class_type || node.inputs));
-            return isComfy ? parsed : null;
+            const nestedCandidates = [];
+            Object.values(raw).forEach((value) => {
+                const parsed = unwrapNestedJsonFields(value);
+                if (parsed && typeof parsed === 'object') {
+                    nestedCandidates.push(parsed);
+                    if (parsed.prompt) nestedCandidates.push(parsed.prompt);
+                    if (parsed.workflow) nestedCandidates.push(parsed.workflow);
+                    if (parsed.generation_data) nestedCandidates.push(parsed.generation_data);
+                }
+            });
+            const candidates = [
+                raw.prompt,
+                raw.workflow,
+                raw.generation_data,
+                raw.user_comment,
+                raw.usercomment,
+                raw.description,
+                raw.camera_manufacturer,
+                raw.image_descriptiion,
+                raw.image_description,
+                ...nestedCandidates,
+            ];
+            for (const candidate of candidates) {
+                if (!candidate) continue;
+                const parsed = unwrapNestedJsonFields(candidate);
+                if (!parsed || typeof parsed !== 'object') continue;
+                const graph = normalizeComfyGraph(parsed);
+                if (graph) return graph;
+            }
+            return null;
         };
 
         window.extractGenParamsFromImage = async () => {
@@ -1628,6 +2024,7 @@
                 category,
                 isNSFW: !!artist.isNSFW,
                 note: artist.note || '',
+                generatorType: artist.generatorType || '',
                 aiModel: artist.aiModel || '',
                 styleTag: artist.styleTag || '',
                 characterTag: artist.characterTag || '',
@@ -1657,7 +2054,7 @@
             viewingNote: null,
             tagSelector: null, // { id, x, y } for tag copy selector
             hoverExpandCategory: '',
-            formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
+            formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
             theme: localStorage.getItem(THEME_KEY) || 'light',
             aiConfig: JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || '{}'),
             displayConfig: (() => {
@@ -2201,14 +2598,34 @@
             updateState({ tagSelector: null });
         };
 
-        const hasArtistHoverDetails = (artist) => !!(artist && (artist.aiModel || artist.steps || artist.sampler || artist.cfgScale || artist.seed || artist.modelHash || artist.tag || artist.styleTag || artist.characterTag || artist.clothingTag));
+        const resolveGeneratorChip = (artist = {}) => {
+            const explicit = String(artist.generatorType || '').toUpperCase();
+            if (['SD', 'COMFY', 'NAI'].includes(explicit)) return explicit;
+            const modelText = String(artist.aiModel || '').toLowerCase();
+            if (!modelText) return '';
+            if (modelText.includes('comfy')) return 'COMFY';
+            if (modelText.includes('novelai') || modelText.includes('nai diffusion') || modelText.includes('nai')) return 'NAI';
+            if (modelText.includes('stable diffusion') || modelText.includes('a1111') || modelText.includes('webui') || modelText.includes('sdnext') || modelText.includes('sd.next')) return 'SD';
+            return '';
+        };
+
+        const getGeneratorChipToneClass = (generatorChip = '') => {
+            if (generatorChip === 'COMFY') return 'bg-violet-500/35 border-violet-300/40 text-violet-100';
+            if (generatorChip === 'NAI') return 'bg-emerald-500/35 border-emerald-300/40 text-emerald-100';
+            return 'bg-sky-500/35 border-sky-300/40 text-sky-100';
+        };
+
+        const hasArtistHoverDetails = (artist) => !!(artist && (resolveGeneratorChip(artist) || artist.aiModel || artist.steps || artist.sampler || artist.cfgScale || artist.seed || artist.modelHash || artist.tag || artist.styleTag || artist.characterTag || artist.clothingTag));
 
         const renderHoverDetailContent = (artist) => {
             const safeTitle = (v) => String(v || '').replace(/"/g, '&quot;');
+            const generatorChip = resolveGeneratorChip(artist);
+            const generatorChipToneClass = getGeneratorChipToneClass(generatorChip);
             return `
                 <div id="hover-detail-panel" data-artist-id="${artist.id}" class="fixed z-40 rounded-2xl border border-white/35 dark:border-slate-600/60 bg-black/75 dark:bg-slate-900/90 backdrop-blur-xl shadow-2xl p-3.5 text-xs text-white/90 leading-tight max-h-[72vh] overflow-y-auto custom-scrollbar w-[20rem] max-w-[calc(100vw-1.5rem)] animate-fade-in">
                     <div class="text-[10px] uppercase tracking-wider text-white/70 mb-2 font-semibold">生成参数</div>
                     <div class="space-y-1.5 text-[11px] text-white/90 leading-tight">
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Type</span><span class="text-[10px] font-bold px-1.5 py-0.5 rounded border backdrop-blur-sm ${generatorChip ? generatorChipToneClass : 'bg-white/15 border-white/20 text-white/80'}">${generatorChip || '-'}</span></div>
                         <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Model</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.aiModel)}">${artist.aiModel || '-'}</span></div>
                         <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Steps</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.steps)}">${artist.steps || '-'}</span></div>
                         <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Sampler</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.sampler)}">${artist.sampler || '-'}</span></div>
@@ -2483,7 +2900,7 @@
 
         // --- Modal Logic ---
         window.openAddModal = () => {
-            state.formData = { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' };
+            state.formData = { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' };
             state.comfyWorkflowData = null;
             state.showComfyWorkflow = false;
             updateState({ isModalOpen: true, editingArtist: null, previewImage: null });
@@ -2515,6 +2932,8 @@
             try {
                 const base64 = await readImageAsBase64(file);
                 state.formData.imageUrl = base64;
+                state.comfyWorkflowData = null;
+                state.showComfyWorkflow = false;
                 updateModalImagePreviewDOM(); 
                 showToast('图片已添加');
                 // Auto-detect ComfyUI workflow metadata from the original file
@@ -2538,22 +2957,9 @@
                         const comfyData = detectComfyWorkflow(rawMetadata);
                         console.log('[comfy-detect] comfyData:', comfyData ? 'found (' + Object.keys(comfyData).length + ' nodes)' : null);
                         state.comfyWorkflowData = comfyData;
-                        if (comfyData) {
-                            // Inject button directly into DOM instead of full re-render
-                            const extractBtn = document.getElementById('modal-extract-btn');
-                            if (extractBtn && !document.getElementById('comfy-workflow-btn')) {
-                                const btn = document.createElement('button');
-                                btn.type = 'button';
-                                btn.id = 'comfy-workflow-btn';
-                                btn.onclick = toggleComfyWorkflowViewer;
-                                btn.className = 'btn-icon liquid-action-tint w-full mt-2 py-2.5 rounded-xl bg-violet-500/90 text-white font-bold text-sm shadow-lg hover:bg-violet-500 transition-all flex items-center justify-center gap-2';
-                                btn.innerHTML = '<i data-lucide="workflow" class="w-4 h-4"></i>查看 ComfyUI 工作流';
-                                extractBtn.parentNode.appendChild(btn);
-                                lucide.createIcons(btn);
-                            }
-                        }
                     }
                 } catch (comfyErr) { console.error('[comfy-detect] error:', comfyErr); }
+                renderModals();
             } catch(e) { showToast('图片读取失败'); }
             e.target.value = '';
         };
@@ -2592,7 +2998,7 @@
             updateModalExtractButtonDOM();
         };
         window.handleSaveArtist = async () => {
-            const { name, tag, imageUrl, category, danbooruCount, isNSFW, note, aiModel, styleTag, characterTag, clothingTag, cfgScale, seed, steps, sampler, modelHash } = state.formData;
+            const { name, tag, imageUrl, category, danbooruCount, isNSFW, note, generatorType, aiModel, styleTag, characterTag, clothingTag, cfgScale, seed, steps, sampler, modelHash } = state.formData;
             if (!tag || !tag.trim()) return;
             const isEdit = !!state.editingArtist;
             const id = isEdit ? state.editingArtist.id : Date.now().toString();
@@ -2606,6 +3012,7 @@
                 danbooruCount: parseInt(danbooruCount) || 0,
                 isNSFW: !!isNSFW,
                 note: note || '',
+                generatorType: generatorType || '',
                 aiModel: aiModel || '',
                 styleTag: styleTag || '',
                 characterTag: characterTag || '',
@@ -2950,6 +3357,8 @@
 
             container.innerHTML = list.map(artist => {
                 const isSel = !!state.selectedArtists[artist.id];
+                const generatorChip = resolveGeneratorChip(artist);
+                const generatorChipToneClass = getGeneratorChipToneClass(generatorChip);
                 return `
                 <div onclick="toggleSelection('${artist.id}')" onmouseenter="showHoverDetail('${artist.id}', event)" onmouseleave="scheduleHideHoverDetail(event)" data-artist-id="${artist.id}" class="group artist-card relative glass-card rounded-3xl overflow-hidden cursor-pointer hover:-translate-y-2 transition-all duration-300 bg-white/40 dark:bg-slate-800/40 ${isSel ? 'ring-4 ring-indigo-500 dark:ring-indigo-400 shadow-2xl scale-[1.02]' : 'hover:shadow-xl dark:border-white/5'}">
                     <div class="aspect-[${layout.aspect}] bg-slate-100 dark:bg-slate-700/50 relative overflow-hidden">
@@ -2957,7 +3366,6 @@
                             ? `<img src="${artist.imageUrl}" class="w-full h-full object-cover transition-all duration-500 group-hover:scale-110 ${artist.isNSFW && state.displayConfig?.blurNSFW !== false ? 'blur-xl group-hover:blur-none' : ''}" loading="lazy" />` 
                             : `<div class="w-full h-full flex items-center justify-center text-slate-300 dark:text-slate-600"><i data-lucide="image" class="w-12 h-12"></i></div>`
                         }
-                        ${artist.isNSFW ? `<div class="absolute bottom-3 left-3 px-2.5 py-1 bg-red-500/90 backdrop-blur-sm text-white text-xs font-bold rounded-lg shadow-lg z-20 flex items-center gap-1"><i data-lucide="eye-off" class="w-3 h-3"></i>NSFW</div>` : ''}
                         ${isSel ? `<div class="absolute inset-0 bg-indigo-500/20 dark:bg-indigo-400/20 z-10 animate-fade-in flex items-center justify-center"><div class="bg-white dark:bg-slate-900 rounded-full p-2 shadow-lg"><i data-lucide="check" class="w-6 h-6 text-indigo-600 dark:text-indigo-400"></i></div></div>` : ''}
                         
                         <div class="absolute top-3 right-3 flex flex-col gap-2 translate-x-14 opacity-0 group-hover:translate-x-0 group-hover:opacity-100 transition-all duration-300 z-30">
@@ -2970,7 +3378,13 @@
                         <button onclick="toggleFavorite('${artist.id}', event)" class="btn-icon liquid-action absolute top-3 left-3 p-2.5 rounded-full ${artist.isFavorite ? 'bg-white/90 dark:bg-slate-800/90 text-pink-500 shadow-md' : 'bg-black/20 text-white/70 hover:bg-white/90 hover:text-pink-400'} backdrop-blur-sm transition-all z-30"><i data-lucide="heart" class="w-5 h-5 ${artist.isFavorite ? 'fill-current' : ''}"></i></button>
                     </div>
                     <div class="p-4 absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/70 to-transparent backdrop-blur-sm ${state.displayConfig?.showCardInfo ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0'} transition-all duration-300">
-                        <h3 class="font-bold text-white text-base truncate tracking-tight drop-shadow-lg">${artist.name}</h3>
+                        <div class="flex items-center justify-between gap-2">
+                            <h3 class="font-bold text-white text-base truncate tracking-tight drop-shadow-lg min-w-0">${artist.name}</h3>
+                            <div class="flex items-center gap-1.5 shrink-0">
+                                ${generatorChip ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border backdrop-blur-sm ${generatorChipToneClass}">${generatorChip}</span>` : ''}
+                                ${artist.isNSFW ? `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded border bg-red-500/35 border-red-300/40 text-red-100 backdrop-blur-sm flex items-center gap-1"><i data-lucide="eye-off" class="w-2.5 h-2.5"></i>NSFW</span>` : ''}
+                            </div>
+                        </div>
                         <div class="flex justify-between items-center mt-1.5">
                             <span class="text-xs text-white/80 font-mono truncate max-w-[50%] drop-shadow">${artist.tag}</span>
                             <div class="flex items-center gap-1.5">
@@ -3127,7 +3541,7 @@
                                             <option value="custom" ${displayConfig.layoutPreset === 'custom' ? 'selected' : ''}>自定义</option>
                                         </select>
                                     </div>
-                                    <div class="grid grid-cols-2 gap-2 ${displayConfig.layoutPreset === 'custom' ? '' : 'opacity-60'}">
+                                    <div class="${displayConfig.layoutPreset === 'custom' ? 'grid grid-cols-2 gap-2' : 'hidden'}">
                                         <div>
                                             <label class="block text-[11px] text-slate-500 dark:text-slate-400 mb-1">每行磁贴数</label>
                                             <input id="layout-custom-cols" type="number" min="1" max="12" value="${displayConfig.customCols || 4}" oninput="updateLayoutCustom('customCols', this.value)" class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm">
