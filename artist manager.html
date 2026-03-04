@@ -947,6 +947,23 @@
             display: none;
         }
 
+        .sync-progress-track {
+            width: 100%;
+            height: 0.5rem;
+            border-radius: 9999px;
+            overflow: hidden;
+            background: rgba(148, 163, 184, 0.22);
+            border: 1px solid rgba(148, 163, 184, 0.24);
+        }
+
+        .sync-progress-fill {
+            height: 100%;
+            border-radius: 9999px;
+            transition: width 0.35s ease;
+            background: linear-gradient(90deg, #6366f1, #3b82f6);
+            box-shadow: 0 0 10px rgba(99, 102, 241, 0.35);
+        }
+
         @media (max-width: 430px) {
             body.mobile-ui #cards-container {
                 grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
@@ -2690,6 +2707,10 @@
             isNodeTagPresetOpen: false,
             isAISettingsOpen: false,
             isSyncModalOpen: false,
+            syncProgressVisible: false,
+            syncProgressPercent: 0,
+            syncProgressLabel: '',
+            syncProgressStatus: 'idle',
             comfyWorkflowData: null,
             showComfyWorkflow: false
         };
@@ -2723,8 +2744,55 @@
             rafId: 0,
             container: null
         };
+        let syncProgressResetTimer = null;
 
         const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
+        const clearSyncProgressResetTimer = () => {
+            if (syncProgressResetTimer) {
+                clearTimeout(syncProgressResetTimer);
+                syncProgressResetTimer = null;
+            }
+        };
+        const scheduleSyncProgressReset = (delay = 900) => {
+            clearSyncProgressResetTimer();
+            syncProgressResetTimer = setTimeout(() => {
+                updateState({
+                    syncProgressVisible: false,
+                    syncProgressPercent: 0,
+                    syncProgressLabel: '',
+                    syncProgressStatus: 'idle'
+                });
+                syncProgressResetTimer = null;
+            }, delay);
+        };
+        const beginSyncProgress = (label) => {
+            clearSyncProgressResetTimer();
+            updateState({
+                syncProgressVisible: true,
+                syncProgressPercent: 8,
+                syncProgressLabel: String(label || '同步处理中...'),
+                syncProgressStatus: 'running'
+            });
+        };
+        const updateSyncProgress = (percent, label, status = 'running') => {
+            clearSyncProgressResetTimer();
+            const nextPercent = clampNumber(Number(percent) || 0, 0, 100);
+            updateState({
+                syncProgressVisible: true,
+                syncProgressPercent: nextPercent,
+                syncProgressLabel: String(label || state.syncProgressLabel || '同步处理中...'),
+                syncProgressStatus: status
+            });
+        };
+        const finishSyncProgress = (label) => {
+            updateSyncProgress(100, label || '同步完成', 'success');
+            scheduleSyncProgressReset(1000);
+        };
+        const failSyncProgress = (label) => {
+            const fallbackPercent = Math.max(8, Number(state.syncProgressPercent) || 0);
+            updateSyncProgress(fallbackPercent, label || '同步失败', 'error');
+            scheduleSyncProgressReset(2000);
+        };
 
         const getGeneratorWindowMetrics = () => {
             const isTablet = window.innerWidth <= 1024;
@@ -4008,7 +4076,16 @@
             return JSON.parse(await response.text());
         };
 
-        window.closeSyncModal = () => updateState({ isSyncModalOpen: false });
+        window.closeSyncModal = () => {
+            clearSyncProgressResetTimer();
+            updateState({
+                isSyncModalOpen: false,
+                syncProgressVisible: false,
+                syncProgressPercent: 0,
+                syncProgressLabel: '',
+                syncProgressStatus: 'idle'
+            });
+        };
         window.handleSyncMethodChange = (method) => {
             updateState({ syncMethod: method === 's3' ? 's3' : 'webdav' });
         };
@@ -4128,7 +4205,11 @@
                 syncMethod: draft.syncMethod,
                 webdavConfig: draft.webdavConfig,
                 s3Config: draft.s3Config,
-                isSyncModalOpen: false
+                isSyncModalOpen: false,
+                syncProgressVisible: false,
+                syncProgressPercent: 0,
+                syncProgressLabel: '',
+                syncProgressStatus: 'idle'
             });
             showToast('同步配置已保存');
         };
@@ -4141,11 +4222,17 @@
                     const accepted = confirm('检测到同步配置有未保存修改。是否按当前编辑值执行同步上传？');
                     if (!accepted) return;
                 }
+                const channelLabel = draft.syncMethod === 's3' ? 'S3' : 'WebDAV';
+                beginSyncProgress('准备同步数据...');
+                updateSyncProgress(28, `正在上传到 ${channelLabel}...`);
                 const channel = draft.syncMethod === 's3' ? await s3Upload(draft.s3Config) : await webdavUpload(draft.webdavConfig);
+                updateSyncProgress(92, `已上传到 ${channel}，正在收尾...`);
                 showToast(`已同步到 ${channel}`);
+                finishSyncProgress(`同步到 ${channel} 完成`);
             } catch (error) {
                 console.error('Sync upload failed', error);
                 const message = String(error?.message || '网络错误');
+                failSyncProgress(`同步失败: ${message.includes('Failed to fetch') ? '网络/CORS 问题' : message}`);
                 showToast(`同步失败: ${message.includes('Failed to fetch') ? '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS' : message}`);
             }
         };
@@ -4158,9 +4245,14 @@
                     if (!accepted) return;
                 }
                 const channel = draft.syncMethod === 's3' ? 'S3' : 'WebDAV';
+                beginSyncProgress(`准备从 ${channel} 拉取...`);
+                updateSyncProgress(24, `正在从 ${channel} 拉取数据...`);
                 const rawJson = draft.syncMethod === 's3' ? await s3Download(draft.s3Config) : await webdavDownload(draft.webdavConfig);
+                updateSyncProgress(55, '数据拉取成功，正在解析...');
                 const resolved = resolveImportPayload(rawJson);
+                updateSyncProgress(74, '解析完成，正在合并本地数据...');
                 const { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
+                updateSyncProgress(95, '合并完成，正在收尾...');
                 if (addedCount > 0) {
                     const baseMsg = skippedInvalid > 0 ? `从 ${channel} 同步 ${addedCount} 条（跳过 ${skippedInvalid} 条）` : `从 ${channel} 同步 ${addedCount} 条`;
                     const extras = [
@@ -4177,9 +4269,11 @@
                     ].filter(Boolean);
                     showToast(extras.length ? `${channel} 已同步：${extras.join('，')}` : `${channel} 无新增数据`);
                 }
+                finishSyncProgress(`从 ${channel} 拉取完成`);
             } catch (error) {
                 console.error('Sync download failed', error);
                 const message = String(error?.message || '网络错误');
+                failSyncProgress(`拉取失败: ${message.includes('Failed to fetch') ? '网络/CORS 问题' : message}`);
                 showToast(`拉取失败: ${message.includes('Failed to fetch') ? '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS' : message}`);
             }
         };
@@ -5028,6 +5122,11 @@
                 const syncConfig = normalizeWebdavConfig(state.webdavConfig || {});
                 const s3Config = normalizeS3Config(state.s3Config || {});
                 const syncMethod = state.syncMethod === 's3' ? 's3' : 'webdav';
+                const syncProgressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
+                const syncProgressLabel = escapeHtml(state.syncProgressLabel || '同步处理中...');
+                const syncProgressToneClass = state.syncProgressStatus === 'error'
+                    ? 'text-red-600 dark:text-red-300'
+                    : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
                 const safeEndpoint = escapeHtml(syncConfig.endpoint || '');
                 const safeUsername = escapeHtml(syncConfig.username || '');
                 const safePassword = escapeHtml(syncConfig.password || '');
@@ -5150,6 +5249,16 @@
                                         <i data-lucide="download" class="w-4 h-4"></i>${syncMethod === 's3' ? '从 S3 拉取并合并' : '从 WebDAV 拉取并合并'}
                                     </button>
                                 </div>
+                                ${state.syncProgressVisible ? `
+                                <div class="rounded-xl bg-white/70 dark:bg-slate-900/55 border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+                                    <div class="flex items-center justify-between text-xs">
+                                        <span class="font-semibold ${syncProgressToneClass}">${syncProgressLabel}</span>
+                                        <span class="text-slate-500 dark:text-slate-400 font-mono">${syncProgressPercent}%</span>
+                                    </div>
+                                    <div class="sync-progress-track">
+                                        <div class="sync-progress-fill" style="width: ${syncProgressPercent}%;"></div>
+                                    </div>
+                                </div>` : ''}
                                 <p class="text-xs text-slate-500 dark:text-slate-400">提示：浏览器直连远程存储都需要服务端允许 CORS。建议使用应用专用密钥而非主账号密码。</p>
                             </div>
 
