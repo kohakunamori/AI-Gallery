@@ -882,7 +882,8 @@
         const SYNC_METHOD_KEY = 'nai-sync-method';
         const GENERATOR_WINDOW_POS_KEY = 'nai-generator-window-pos';
         const NODE_TAG_PRESETS_KEY = 'nai-node-tag-presets';
-        const EXPORT_VERSION = 3;
+        const NODE_TAG_PRESET_ACTIVE_KEY = 'nai-node-tag-active-preset-id';
+        const EXPORT_VERSION = 4;
         const METADATA_EDITOR_PATH = 'C:/Users/gekdanhs/Downloads/AI-Image-Metadata-Editor.html';
 
         // 数据库操作封装
@@ -936,7 +937,10 @@
                     req.onsuccess = () => resolve();
                     req.onerror = () => reject(req.error);
                 });
-            } catch (e) { console.error("IDB Save Error", e); }
+            } catch (e) {
+                console.error("IDB Save Error", e);
+                throw e;
+            }
         };
 
         const getAllImagesFromIDB = async ({ forExport = false } = {}) => {
@@ -2479,6 +2483,20 @@
         const normalizeArtistList = (list = []) => Array.isArray(list) ? list.map(item => normalizeArtistRecord(item || {})) : [];
 
         const initialNodeTagPresets = loadNodeTagPresets();
+        const initialActiveNodeTagPresetId = (() => {
+            const stored = String(localStorage.getItem(NODE_TAG_PRESET_ACTIVE_KEY) || '').trim();
+            return initialNodeTagPresets.find((preset) => preset.id === stored)?.id || initialNodeTagPresets[0]?.id || '';
+        })();
+
+        const safeLocalStorageSetItem = (key, value) => {
+            try {
+                localStorage.setItem(key, value);
+                return true;
+            } catch (error) {
+                console.warn(`[storage] failed to persist ${key}:`, error);
+                return false;
+            }
+        };
 
         let state = {
             liveArtists: [],
@@ -2534,7 +2552,7 @@
                 return raw === 's3' ? 's3' : 'webdav';
             })(),
             nodeTagPresets: initialNodeTagPresets,
-            activeNodeTagPresetId: initialNodeTagPresets[0]?.id || '',
+            activeNodeTagPresetId: initialActiveNodeTagPresetId,
             isNodeTagPresetOpen: false,
             isAISettingsOpen: false,
             isSyncModalOpen: false,
@@ -2681,41 +2699,45 @@
                     const safeUrl = (imageUrl && (imageUrl.startsWith('data:') || imageUrl.startsWith('blob:'))) ? '' : imageUrl;
                     return { ...rest, imageUrl: safeUrl };
                 });
-                try { localStorage.setItem(METADATA_KEY, JSON.stringify(metadata)); } catch(e) {}
+                safeLocalStorageSetItem(METADATA_KEY, JSON.stringify(metadata));
             }
 
             if (newState.categories !== undefined) {
-                try { localStorage.setItem(CATEGORY_KEY, JSON.stringify(normalizeCategoryList(state.categories))); } catch (e) {}
+                safeLocalStorageSetItem(CATEGORY_KEY, JSON.stringify(normalizeCategoryList(state.categories)));
             }
             
             if (newState.theme) {
-                localStorage.setItem(THEME_KEY, newState.theme);
+                safeLocalStorageSetItem(THEME_KEY, newState.theme);
                 applyTheme(newState.theme);
             }
 
             if (newState.displayConfig) {
-                localStorage.setItem(DISPLAY_CONFIG_KEY, JSON.stringify(state.displayConfig));
+                safeLocalStorageSetItem(DISPLAY_CONFIG_KEY, JSON.stringify(state.displayConfig));
                 applyDisplayPersonalization(state.displayConfig);
             }
 
             if (newState.aiConfig) {
-                localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(normalizeAiConfig(state.aiConfig || {})));
+                safeLocalStorageSetItem(AI_CONFIG_KEY, JSON.stringify(normalizeAiConfig(state.aiConfig || {})));
             }
 
             if (newState.webdavConfig) {
-                localStorage.setItem(WEBDAV_CONFIG_KEY, JSON.stringify(normalizeWebdavConfig(state.webdavConfig)));
+                safeLocalStorageSetItem(WEBDAV_CONFIG_KEY, JSON.stringify(normalizeWebdavConfig(state.webdavConfig)));
             }
 
             if (newState.s3Config) {
-                localStorage.setItem(S3_CONFIG_KEY, JSON.stringify(normalizeS3Config(state.s3Config)));
+                safeLocalStorageSetItem(S3_CONFIG_KEY, JSON.stringify(normalizeS3Config(state.s3Config)));
             }
 
             if (newState.syncMethod) {
-                localStorage.setItem(SYNC_METHOD_KEY, state.syncMethod === 's3' ? 's3' : 'webdav');
+                safeLocalStorageSetItem(SYNC_METHOD_KEY, state.syncMethod === 's3' ? 's3' : 'webdav');
             }
 
             if (newState.nodeTagPresets !== undefined) {
-                localStorage.setItem(NODE_TAG_PRESETS_KEY, JSON.stringify(normalizeNodeTagPresetList(state.nodeTagPresets)));
+                safeLocalStorageSetItem(NODE_TAG_PRESETS_KEY, JSON.stringify(normalizeNodeTagPresetList(state.nodeTagPresets)));
+            }
+
+            if (newState.nodeTagPresets !== undefined || newState.activeNodeTagPresetId !== undefined) {
+                safeLocalStorageSetItem(NODE_TAG_PRESET_ACTIVE_KEY, String(state.activeNodeTagPresetId || ''));
             }
 
             if (shouldRender) {
@@ -3264,13 +3286,37 @@
             s3Config: normalizeS3Config(state.s3Config || {})
         });
 
+        const buildBackgroundImageFile = (displayConfigInput = state.displayConfig) => {
+            const displayConfig = normalizeDisplayConfig(displayConfigInput || {});
+            const dataUrl = String(displayConfig.backgroundImage || '').trim();
+            if (!dataUrl) return null;
+            const mimeMatch = dataUrl.match(/^data:([^;]+);/i);
+            const mimeType = String(mimeMatch?.[1] || 'image/jpeg').toLowerCase();
+            const extMap = {
+                'image/png': 'png',
+                'image/webp': 'webp',
+                'image/gif': 'gif',
+                'image/jpg': 'jpg',
+                'image/jpeg': 'jpg',
+                'image/avif': 'avif'
+            };
+            const ext = extMap[mimeType] || 'img';
+            return {
+                fileName: `gallery-background.${ext}`,
+                mimeType,
+                dataUrl
+            };
+        };
+
         const buildSettingsSnapshot = () => {
             const normalizedNodeTagPresets = normalizeNodeTagPresetList(state.nodeTagPresets || []);
             const activePresetId = normalizedNodeTagPresets.find((p) => p.id === state.activeNodeTagPresetId)?.id || normalizedNodeTagPresets[0]?.id || '';
+            const normalizedDisplayConfig = normalizeDisplayConfig(state.displayConfig || {});
             return {
                 theme: Object.hasOwn(themes, state.theme) ? state.theme : 'light',
                 aiConfig: normalizeAiConfig(state.aiConfig || {}),
-                displayConfig: normalizeDisplayConfig(state.displayConfig || {}),
+                displayConfig: normalizedDisplayConfig,
+                backgroundImageFile: buildBackgroundImageFile(normalizedDisplayConfig),
                 nodeTagPresets: normalizedNodeTagPresets,
                 activeNodeTagPresetId: activePresetId
             };
@@ -3351,6 +3397,11 @@
                         || rawJson.ai !== undefined
                         || rawJson.displayConfig !== undefined
                         || rawJson.display !== undefined
+                        || rawJson.activeNodeTagPresetId !== undefined
+                        || rawJson.activePresetId !== undefined
+                        || rawJson.backgroundImageFile !== undefined
+                        || rawJson.backgroundImageDataUrl !== undefined
+                        || (rawJson.assets && rawJson.assets.backgroundImageFile !== undefined)
                         || rawJson.nodeTagPresets !== undefined
                         || rawJson.comfyNodeTagPresets !== undefined);
                 return hasTopLevelSettings ? rawJson : null;
@@ -3373,20 +3424,39 @@
                 }
 
                 if (source.aiConfig !== undefined || source.ai !== undefined) {
-                    out.aiConfig = normalizeAiConfig(source.aiConfig || source.ai || {});
+                    const aiSource = source.aiConfig !== undefined ? source.aiConfig : source.ai;
+                    if (aiSource === null) out.aiConfig = null;
+                    else out.aiConfig = (aiSource && typeof aiSource === 'object') ? aiSource : {};
                 }
 
-                if (source.displayConfig !== undefined || source.display !== undefined) {
-                    out.displayConfig = normalizeDisplayConfig(source.displayConfig || source.display || {});
+                const backgroundImageDataUrl = String(
+                    source?.backgroundImageFile?.dataUrl
+                    || source?.backgroundImageFile?.data
+                    || source?.assets?.backgroundImageFile?.dataUrl
+                    || source?.assets?.backgroundImageFile?.data
+                    || source?.backgroundImageDataUrl
+                    || ''
+                ).trim();
+
+                if (source.displayConfig !== undefined || source.display !== undefined || backgroundImageDataUrl) {
+                    const displaySource = source.displayConfig !== undefined ? source.displayConfig : source.display;
+                    const displayPatch = displaySource === null ? null : { ...((displaySource && typeof displaySource === 'object') ? displaySource : {}) };
+                    if (backgroundImageDataUrl) {
+                        const safePatch = displayPatch && typeof displayPatch === 'object' ? displayPatch : {};
+                        safePatch.backgroundImage = backgroundImageDataUrl;
+                        out.displayConfig = safePatch;
+                    } else {
+                        out.displayConfig = displayPatch;
+                    }
                 }
 
                 if (source.nodeTagPresets !== undefined || source.comfyNodeTagPresets !== undefined) {
                     const normalizedPresets = normalizeNodeTagPresetList(source.nodeTagPresets || source.comfyNodeTagPresets || []);
-                    if (normalizedPresets.length) {
-                        out.nodeTagPresets = normalizedPresets;
-                        const rawActivePreset = String(source.activeNodeTagPresetId || source.activePresetId || '').trim();
-                        out.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActivePreset)?.id || normalizedPresets[0].id;
-                    }
+                    out.nodeTagPresets = normalizedPresets;
+                    const rawActivePreset = String(source.activeNodeTagPresetId || source.activePresetId || '').trim();
+                    out.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActivePreset)?.id || normalizedPresets[0]?.id || '';
+                } else if (source.activeNodeTagPresetId !== undefined || source.activePresetId !== undefined) {
+                    out.activeNodeTagPresetId = String(source.activeNodeTagPresetId || source.activePresetId || '').trim();
                 }
 
                 return Object.keys(out).length ? out : null;
@@ -3395,11 +3465,20 @@
             const syncConfigPatch = (() => {
                 if (!hasSyncSource) return null;
                 const source = rawJson && typeof rawJson.syncConfig === 'object' ? rawJson.syncConfig : rawJson;
-                return {
-                    syncMethod: String(source?.syncMethod || '').toLowerCase() === 's3' ? 's3' : 'webdav',
-                    webdavConfig: normalizeWebdavConfig(source?.webdavConfig || source?.webdav || {}),
-                    s3Config: normalizeS3Config(source?.s3Config || source?.s3 || {})
-                };
+                const hasSyncMethod = source?.syncMethod !== undefined;
+                const hasWebdav = source?.webdavConfig !== undefined || source?.webdav !== undefined;
+                const hasS3 = source?.s3Config !== undefined || source?.s3 !== undefined;
+                const out = {};
+                if (hasSyncMethod) out.syncMethod = String(source?.syncMethod || '').toLowerCase() === 's3' ? 's3' : 'webdav';
+                if (hasWebdav) {
+                    const webdavSource = source?.webdavConfig !== undefined ? source?.webdavConfig : source?.webdav;
+                    out.webdavConfig = webdavSource === null ? null : ((webdavSource && typeof webdavSource === 'object') ? webdavSource : {});
+                }
+                if (hasS3) {
+                    const s3Source = source?.s3Config !== undefined ? source?.s3Config : source?.s3;
+                    out.s3Config = s3Source === null ? null : ((s3Source && typeof s3Source === 'object') ? s3Source : {});
+                }
+                return Object.keys(out).length ? out : null;
             })();
 
             if (!objArtists) {
@@ -3431,6 +3510,7 @@
             const importedCategories = new Set(normalizeCategoryList(resolved.categories));
             let addedCount = 0;
             let skippedInvalid = 0;
+            let imagePersistFailed = 0;
 
             for (const item of importList) {
                 const tag = String(item?.tag || '').trim();
@@ -3439,7 +3519,13 @@
 
                 const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
                 if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
-                    await saveImageToIDB(id, item.imageUrl);
+                    try {
+                        await saveImageToIDB(id, item.imageUrl);
+                    } catch (_) {
+                        skippedInvalid++;
+                        imagePersistFailed++;
+                        continue;
+                    }
                 }
 
                 const category = normalizeCategoryName(item.category);
@@ -3495,35 +3581,54 @@
                     nextStatePatch.theme = settingsPatch.theme;
                     settingsUpdated = true;
                 }
-                if (settingsPatch.aiConfig) {
-                    nextStatePatch.aiConfig = normalizeAiConfig(settingsPatch.aiConfig);
+                if (settingsPatch.aiConfig === null) {
+                    nextStatePatch.aiConfig = normalizeAiConfig({});
+                    settingsUpdated = true;
+                } else if (settingsPatch.aiConfig && typeof settingsPatch.aiConfig === 'object') {
+                    nextStatePatch.aiConfig = normalizeAiConfig({ ...(state.aiConfig || {}), ...settingsPatch.aiConfig });
                     settingsUpdated = true;
                 }
-                if (settingsPatch.displayConfig) {
-                    nextStatePatch.displayConfig = normalizeDisplayConfig(settingsPatch.displayConfig);
+                if (settingsPatch.displayConfig === null) {
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({ backgroundImage: '' });
+                    settingsUpdated = true;
+                } else if (settingsPatch.displayConfig && typeof settingsPatch.displayConfig === 'object') {
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({ ...(state.displayConfig || {}), ...settingsPatch.displayConfig });
                     settingsUpdated = true;
                 }
-                if (Array.isArray(settingsPatch.nodeTagPresets) && settingsPatch.nodeTagPresets.length) {
+                if (Array.isArray(settingsPatch.nodeTagPresets)) {
                     const normalizedPresets = normalizeNodeTagPresetList(settingsPatch.nodeTagPresets);
-                    if (normalizedPresets.length) {
-                        nextStatePatch.nodeTagPresets = normalizedPresets;
-                        const rawActive = String(settingsPatch.activeNodeTagPresetId || '').trim();
-                        nextStatePatch.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActive)?.id || normalizedPresets[0].id;
-                        settingsUpdated = true;
-                    }
+                    nextStatePatch.nodeTagPresets = normalizedPresets;
+                    const rawActive = String(settingsPatch.activeNodeTagPresetId || '').trim();
+                    nextStatePatch.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActive)?.id || normalizedPresets[0]?.id || '';
+                    settingsUpdated = true;
+                } else if (settingsPatch.activeNodeTagPresetId !== undefined) {
+                    const rawActive = String(settingsPatch.activeNodeTagPresetId || '').trim();
+                    const basePresets = normalizeNodeTagPresetList(nextStatePatch.nodeTagPresets || state.nodeTagPresets || []);
+                    nextStatePatch.activeNodeTagPresetId = basePresets.find((p) => p.id === rawActive)?.id || basePresets[0]?.id || '';
+                    settingsUpdated = true;
                 }
             }
 
             const syncConfigPatch = resolved?.syncConfigPatch;
             if (syncConfigPatch && typeof syncConfigPatch === 'object') {
-                nextStatePatch.syncMethod = syncConfigPatch.syncMethod === 's3' ? 's3' : 'webdav';
-                nextStatePatch.webdavConfig = normalizeWebdavConfig(syncConfigPatch.webdavConfig || {});
-                nextStatePatch.s3Config = normalizeS3Config(syncConfigPatch.s3Config || {});
+                if (syncConfigPatch.syncMethod !== undefined) {
+                    nextStatePatch.syncMethod = syncConfigPatch.syncMethod === 's3' ? 's3' : 'webdav';
+                }
+                if (syncConfigPatch.webdavConfig === null) {
+                    nextStatePatch.webdavConfig = getDefaultWebdavConfig();
+                } else if (syncConfigPatch.webdavConfig && typeof syncConfigPatch.webdavConfig === 'object') {
+                    nextStatePatch.webdavConfig = normalizeWebdavConfig({ ...(state.webdavConfig || {}), ...syncConfigPatch.webdavConfig });
+                }
+                if (syncConfigPatch.s3Config === null) {
+                    nextStatePatch.s3Config = getDefaultS3Config();
+                } else if (syncConfigPatch.s3Config && typeof syncConfigPatch.s3Config === 'object') {
+                    nextStatePatch.s3Config = normalizeS3Config({ ...(state.s3Config || {}), ...syncConfigPatch.s3Config });
+                }
                 syncConfigUpdated = true;
             }
 
             updateState(nextStatePatch);
-            return { addedCount, skippedInvalid, settingsUpdated, syncConfigUpdated };
+            return { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated };
         };
 
         const encodeBasicAuth = (username, password) => {
@@ -3678,8 +3783,8 @@
                 || text.includes('credential');
         };
 
-        const webdavUpload = async () => {
-            const cfg = normalizeWebdavConfig(state.webdavConfig || {});
+        const webdavUpload = async (webdavConfigInput = state.webdavConfig) => {
+            const cfg = normalizeWebdavConfig(webdavConfigInput || {});
             const targetUrl = resolveWebdavTargetUrl(cfg);
             if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
             const payload = await buildExportPayload();
@@ -3692,8 +3797,8 @@
             return 'WebDAV';
         };
 
-        const webdavDownload = async () => {
-            const cfg = normalizeWebdavConfig(state.webdavConfig || {});
+        const webdavDownload = async (webdavConfigInput = state.webdavConfig) => {
+            const cfg = normalizeWebdavConfig(webdavConfigInput || {});
             const targetUrl = resolveWebdavTargetUrl(cfg);
             if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
             const response = await fetch(targetUrl, {
@@ -3704,8 +3809,8 @@
             return JSON.parse(await response.text());
         };
 
-        const s3Upload = async () => {
-            const cfg = normalizeS3Config(state.s3Config || {});
+        const s3Upload = async (s3ConfigInput = state.s3Config) => {
+            const cfg = normalizeS3Config(s3ConfigInput || {});
             const requestInfo = buildS3RequestInfo(cfg);
             if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
             const payloadObj = await buildExportPayload();
@@ -3731,8 +3836,8 @@
             return 'S3';
         };
 
-        const s3Download = async () => {
-            const cfg = normalizeS3Config(state.s3Config || {});
+        const s3Download = async (s3ConfigInput = state.s3Config) => {
+            const cfg = normalizeS3Config(s3ConfigInput || {});
             const requestInfo = buildS3RequestInfo(cfg);
             if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
             let headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
@@ -3794,6 +3899,22 @@
                 provider: pickValue('s3-provider-select', currentS3.provider)
             });
             return { syncMethod, webdavConfig, s3Config };
+        };
+        const getEffectiveSyncDraft = () => {
+            if (state.isSyncModalOpen) return readSyncDraftFromInputs();
+            return {
+                syncMethod: state.syncMethod === 's3' ? 's3' : 'webdav',
+                webdavConfig: normalizeWebdavConfig(state.webdavConfig || {}),
+                s3Config: normalizeS3Config(state.s3Config || {})
+            };
+        };
+        const isSyncDraftDirty = (draft) => {
+            const persisted = {
+                syncMethod: state.syncMethod === 's3' ? 's3' : 'webdav',
+                webdavConfig: normalizeWebdavConfig(state.webdavConfig || {}),
+                s3Config: normalizeS3Config(state.s3Config || {})
+            };
+            return JSON.stringify(draft) !== JSON.stringify(persisted);
         };
         window.exportSyncSettings = () => {
             try {
@@ -3863,7 +3984,12 @@
 
         window.manualSyncUpload = async () => {
             try {
-                const channel = state.syncMethod === 's3' ? await s3Upload() : await webdavUpload();
+                const draft = getEffectiveSyncDraft();
+                if (state.isSyncModalOpen && isSyncDraftDirty(draft)) {
+                    const accepted = confirm('检测到同步配置有未保存修改。是否按当前编辑值执行同步上传？');
+                    if (!accepted) return;
+                }
+                const channel = draft.syncMethod === 's3' ? await s3Upload(draft.s3Config) : await webdavUpload(draft.webdavConfig);
                 showToast(`已同步到 ${channel}`);
             } catch (error) {
                 console.error('Sync upload failed', error);
@@ -3874,19 +4000,26 @@
 
         window.manualSyncDownload = async () => {
             try {
-                const channel = state.syncMethod === 's3' ? 'S3' : 'WebDAV';
-                const rawJson = state.syncMethod === 's3' ? await s3Download() : await webdavDownload();
+                const draft = getEffectiveSyncDraft();
+                if (state.isSyncModalOpen && isSyncDraftDirty(draft)) {
+                    const accepted = confirm('检测到同步配置有未保存修改。是否按当前编辑值执行拉取？');
+                    if (!accepted) return;
+                }
+                const channel = draft.syncMethod === 's3' ? 'S3' : 'WebDAV';
+                const rawJson = draft.syncMethod === 's3' ? await s3Download(draft.s3Config) : await webdavDownload(draft.webdavConfig);
                 const resolved = resolveImportPayload(rawJson);
-                const { addedCount, skippedInvalid, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
+                const { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
                 if (addedCount > 0) {
                     const baseMsg = skippedInvalid > 0 ? `从 ${channel} 同步 ${addedCount} 条（跳过 ${skippedInvalid} 条）` : `从 ${channel} 同步 ${addedCount} 条`;
                     const extras = [
+                        imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
                         settingsUpdated ? '设置已更新' : '',
                         syncConfigUpdated ? '同步配置已更新' : ''
                     ].filter(Boolean);
                     showToast(extras.length ? `${baseMsg}，${extras.join('，')}` : baseMsg);
                 } else {
                     const extras = [
+                        imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
                         settingsUpdated ? '设置已更新' : '',
                         syncConfigUpdated ? '同步配置已更新' : ''
                     ].filter(Boolean);
@@ -3909,23 +4042,26 @@
                     if (!rawText) throw new Error('Empty file');
                     const rawJson = JSON.parse(rawText);
                     const resolved = resolveImportPayload(rawJson);
-                    const { addedCount, skippedInvalid, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
+                    const { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
                     if (addedCount > 0) {
                         const baseMsg = skippedInvalid > 0 ? `成功导入 ${addedCount} 位画师（跳过 ${skippedInvalid} 条无效数据）` : `成功导入 ${addedCount} 位画师`;
                         const extras = [
+                            imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
                             settingsUpdated ? '设置已更新' : '',
                             syncConfigUpdated ? '同步配置已更新' : ''
                         ].filter(Boolean);
                         showToast(extras.length ? `${baseMsg}，${extras.join('，')}` : baseMsg);
                     } else {
                         const extras = [
+                            imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
                             settingsUpdated ? '设置已更新' : '',
                             syncConfigUpdated ? '同步配置已更新' : ''
                         ].filter(Boolean);
                         showToast(extras.length ? `导入完成：${extras.join('，')}` : '未发现新数据 (重复或无效数据)');
                     }
                 } catch (err) {
-                    showToast('导入失败: 格式错误');
+                    const message = String(err?.message || '格式错误');
+                    showToast(`导入失败: ${message}`);
                 }
             };
             reader.readAsText(file);
@@ -4045,7 +4181,14 @@
             const isEdit = !!state.editingArtist;
             const id = isEdit ? state.editingArtist.id : Date.now().toString();
             const previousArtist = isEdit ? state.liveArtists.find((a) => a.id === id) : null;
-            if (imageUrl && imageUrl.startsWith('data:')) await saveImageToIDB(id, imageUrl);
+            if (imageUrl && imageUrl.startsWith('data:')) {
+                try {
+                    await saveImageToIDB(id, imageUrl);
+                } catch (error) {
+                    showToast(`图片本地存储失败: ${String(error?.message || '未知错误')}`);
+                    return;
+                }
+            }
             else if (isEdit && !imageUrl) await deleteImageFromIDB(id);
             if (isEdit && previousArtist && previousArtist.imageUrl !== imageUrl) {
                 revokeObjectUrlIfNeeded(previousArtist.imageUrl);
