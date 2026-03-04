@@ -3990,6 +3990,69 @@
             return new Error(`${fallback}${detail ? ` - ${detail}` : ''}${reqInfo}`);
         };
 
+        const buildStorageTextError = (prefix, status, rawText = '') => {
+            const fallback = `${prefix} (HTTP ${status || 'unknown'})`;
+            const text = String(rawText || '');
+            const parsed = parseS3ErrorXml(text);
+            const detail = parsed.code
+                ? `${parsed.code}${parsed.message ? `: ${parsed.message}` : ''}`
+                : (text ? text.replace(/\s+/g, ' ').slice(0, 180) : '');
+            const reqInfo = parsed.requestId ? ` (RequestId: ${parsed.requestId})` : '';
+            return new Error(`${fallback}${detail ? ` - ${detail}` : ''}${reqInfo}`);
+        };
+
+        const formatTransferSize = (bytesValue) => {
+            const bytes = Math.max(0, Number(bytesValue) || 0);
+            if (bytes < 1024) return `${Math.round(bytes)} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+        };
+
+        const buildTransferProgress = (event) => {
+            const loaded = Math.max(0, Number(event?.loaded) || 0);
+            const total = Math.max(0, Number(event?.total) || 0);
+            const hasTotal = !!event?.lengthComputable && total > 0;
+            const percent = hasTotal ? clampNumber(Math.round((loaded / total) * 100), 0, 100) : null;
+            return { loaded, total: hasTotal ? total : 0, hasTotal, percent };
+        };
+
+        const executeXhrRequest = ({ method, url, headers = {}, body = null, onUploadProgress, onDownloadProgress }) => {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open(method, url, true);
+                xhr.responseType = 'text';
+                xhr.withCredentials = false;
+
+                Object.entries(headers || {}).forEach(([key, value]) => {
+                    if (value === undefined || value === null || value === '') return;
+                    xhr.setRequestHeader(key, String(value));
+                });
+
+                if (typeof onUploadProgress === 'function' && xhr.upload) {
+                    xhr.upload.onprogress = (event) => {
+                        onUploadProgress(buildTransferProgress(event));
+                    };
+                }
+
+                if (typeof onDownloadProgress === 'function') {
+                    xhr.onprogress = (event) => {
+                        onDownloadProgress(buildTransferProgress(event));
+                    };
+                }
+
+                xhr.onerror = () => reject(new Error('网络请求失败'));
+                xhr.onabort = () => reject(new Error('请求被取消'));
+                xhr.ontimeout = () => reject(new Error('网络请求超时'));
+                xhr.onload = () => {
+                    const responseText = String(xhr.responseText || '');
+                    const status = Number(xhr.status) || 0;
+                    resolve({ status, ok: status >= 200 && status < 300, responseText });
+                };
+
+                xhr.send(body === undefined ? null : body);
+            });
+        };
+
         const shouldRetryR2WithUsEast1 = (cfg, responseText = '', status = 0) => {
             const endpoint = String(cfg?.endpoint || '').toLowerCase();
             const region = String(cfg?.region || '').toLowerCase();
@@ -4003,33 +4066,42 @@
                 || text.includes('credential');
         };
 
-        const webdavUpload = async (webdavConfigInput = state.webdavConfig) => {
+        const webdavUpload = async (webdavConfigInput = state.webdavConfig, onProgress = null) => {
             const cfg = normalizeWebdavConfig(webdavConfigInput || {});
             const targetUrl = resolveWebdavTargetUrl(cfg);
             if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
             const payload = await buildExportPayload();
-            const response = await fetch(targetUrl, {
+            const body = JSON.stringify(payload, null, 2);
+            const response = await executeXhrRequest({
                 method: 'PUT',
+                url: targetUrl,
                 headers: getWebdavHeaders(cfg, { 'Content-Type': 'application/json; charset=utf-8' }),
-                body: JSON.stringify(payload, null, 2)
+                body,
+                onUploadProgress: (progress) => {
+                    if (typeof onProgress === 'function') onProgress(progress);
+                }
             });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            if (!response.ok) throw buildStorageTextError('WebDAV 上传失败', response.status, response.responseText);
             return 'WebDAV';
         };
 
-        const webdavDownload = async (webdavConfigInput = state.webdavConfig) => {
+        const webdavDownload = async (webdavConfigInput = state.webdavConfig, onProgress = null) => {
             const cfg = normalizeWebdavConfig(webdavConfigInput || {});
             const targetUrl = resolveWebdavTargetUrl(cfg);
             if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
-            const response = await fetch(targetUrl, {
+            const response = await executeXhrRequest({
                 method: 'GET',
-                headers: getWebdavHeaders(cfg, { Accept: 'application/json' })
+                url: targetUrl,
+                headers: getWebdavHeaders(cfg, { Accept: 'application/json' }),
+                onDownloadProgress: (progress) => {
+                    if (typeof onProgress === 'function') onProgress(progress);
+                }
             });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return JSON.parse(await response.text());
+            if (!response.ok) throw buildStorageTextError('WebDAV 拉取失败', response.status, response.responseText);
+            return JSON.parse(response.responseText || '{}');
         };
 
-        const s3Upload = async (s3ConfigInput = state.s3Config) => {
+        const s3Upload = async (s3ConfigInput = state.s3Config, onProgress = null) => {
             const cfg = normalizeS3Config(s3ConfigInput || {});
             const requestInfo = buildS3RequestInfo(cfg);
             if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
@@ -4041,39 +4113,67 @@
                 payload,
                 contentType: 'application/json; charset=utf-8'
             });
-            let response = await fetch(requestInfo.url, { method: 'PUT', headers, body: payload, mode: 'cors', credentials: 'omit' });
+            let response = await executeXhrRequest({
+                method: 'PUT',
+                url: requestInfo.url,
+                headers,
+                body: payload,
+                onUploadProgress: (progress) => {
+                    if (typeof onProgress === 'function') onProgress(progress);
+                }
+            });
             if (!response.ok) {
-                let responseText = '';
-                try { responseText = await response.text(); } catch (_) {}
+                const responseText = String(response.responseText || '');
                 if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
                     const retryInfo = { ...requestInfo, region: 'us-east-1' };
                     headers = await signS3Request({ method: 'PUT', requestInfo: retryInfo, payload, contentType: 'application/json; charset=utf-8' });
-                    response = await fetch(retryInfo.url, { method: 'PUT', headers, body: payload, mode: 'cors', credentials: 'omit' });
+                    response = await executeXhrRequest({
+                        method: 'PUT',
+                        url: retryInfo.url,
+                        headers,
+                        body: payload,
+                        onUploadProgress: (progress) => {
+                            if (typeof onProgress === 'function') onProgress(progress);
+                        }
+                    });
                     if (response.ok) return 'S3';
                 }
-                throw await buildStorageHttpError(response, 'S3 上传失败');
+                throw buildStorageTextError('S3 上传失败', response.status, response.responseText || '');
             }
             return 'S3';
         };
 
-        const s3Download = async (s3ConfigInput = state.s3Config) => {
+        const s3Download = async (s3ConfigInput = state.s3Config, onProgress = null) => {
             const cfg = normalizeS3Config(s3ConfigInput || {});
             const requestInfo = buildS3RequestInfo(cfg);
             if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
             let headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
-            let response = await fetch(requestInfo.url, { method: 'GET', headers, mode: 'cors', credentials: 'omit' });
+            let response = await executeXhrRequest({
+                method: 'GET',
+                url: requestInfo.url,
+                headers,
+                onDownloadProgress: (progress) => {
+                    if (typeof onProgress === 'function') onProgress(progress);
+                }
+            });
             if (!response.ok) {
-                let responseText = '';
-                try { responseText = await response.text(); } catch (_) {}
+                const responseText = String(response.responseText || '');
                 if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
                     const retryInfo = { ...requestInfo, region: 'us-east-1' };
                     headers = await signS3Request({ method: 'GET', requestInfo: retryInfo, payload: '' });
-                    response = await fetch(retryInfo.url, { method: 'GET', headers, mode: 'cors', credentials: 'omit' });
-                    if (response.ok) return JSON.parse(await response.text());
+                    response = await executeXhrRequest({
+                        method: 'GET',
+                        url: retryInfo.url,
+                        headers,
+                        onDownloadProgress: (progress) => {
+                            if (typeof onProgress === 'function') onProgress(progress);
+                        }
+                    });
+                    if (response.ok) return JSON.parse(response.responseText || '{}');
                 }
-                throw await buildStorageHttpError(response, 'S3 拉取失败');
+                throw buildStorageTextError('S3 拉取失败', response.status, response.responseText || '');
             }
-            return JSON.parse(await response.text());
+            return JSON.parse(response.responseText || '{}');
         };
 
         window.closeSyncModal = () => {
@@ -4224,8 +4324,18 @@
                 }
                 const channelLabel = draft.syncMethod === 's3' ? 'S3' : 'WebDAV';
                 beginSyncProgress('准备同步数据...');
-                updateSyncProgress(28, `正在上传到 ${channelLabel}...`);
-                const channel = draft.syncMethod === 's3' ? await s3Upload(draft.s3Config) : await webdavUpload(draft.webdavConfig);
+                const uploadProgressHandler = (progress) => {
+                    if (progress?.hasTotal && Number.isFinite(progress.percent)) {
+                        const progressPercent = clampNumber(Math.round(8 + (progress.percent * 0.8)), 8, 88);
+                        updateSyncProgress(progressPercent, `正在上传到 ${channelLabel}... ${progress.percent}%`);
+                    } else {
+                        const loadedText = formatTransferSize(progress?.loaded || 0);
+                        updateSyncProgress(12, `正在上传到 ${channelLabel}... 已发送 ${loadedText}`);
+                    }
+                };
+                const channel = draft.syncMethod === 's3'
+                    ? await s3Upload(draft.s3Config, uploadProgressHandler)
+                    : await webdavUpload(draft.webdavConfig, uploadProgressHandler);
                 updateSyncProgress(92, `已上传到 ${channel}，正在收尾...`);
                 showToast(`已同步到 ${channel}`);
                 finishSyncProgress(`同步到 ${channel} 完成`);
@@ -4246,8 +4356,18 @@
                 }
                 const channel = draft.syncMethod === 's3' ? 'S3' : 'WebDAV';
                 beginSyncProgress(`准备从 ${channel} 拉取...`);
-                updateSyncProgress(24, `正在从 ${channel} 拉取数据...`);
-                const rawJson = draft.syncMethod === 's3' ? await s3Download(draft.s3Config) : await webdavDownload(draft.webdavConfig);
+                const downloadProgressHandler = (progress) => {
+                    if (progress?.hasTotal && Number.isFinite(progress.percent)) {
+                        const progressPercent = clampNumber(Math.round(12 + (progress.percent * 0.5)), 12, 62);
+                        updateSyncProgress(progressPercent, `正在从 ${channel} 拉取... ${progress.percent}%`);
+                    } else {
+                        const loadedText = formatTransferSize(progress?.loaded || 0);
+                        updateSyncProgress(18, `正在从 ${channel} 拉取... 已接收 ${loadedText}`);
+                    }
+                };
+                const rawJson = draft.syncMethod === 's3'
+                    ? await s3Download(draft.s3Config, downloadProgressHandler)
+                    : await webdavDownload(draft.webdavConfig, downloadProgressHandler);
                 updateSyncProgress(55, '数据拉取成功，正在解析...');
                 const resolved = resolveImportPayload(rawJson);
                 updateSyncProgress(74, '解析完成，正在合并本地数据...');
