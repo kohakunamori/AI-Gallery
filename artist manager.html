@@ -862,6 +862,26 @@
         body.mobile-ui #app > header > div:last-child > button[onclick="openAddModal()"] span {
             font-size: 0.8rem;
         }
+
+        @media (min-width: 560px) {
+            body.mobile-ui #app > header {
+                min-height: 4.4rem;
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+                gap: 0.8rem;
+            }
+            body.mobile-ui #app > header > div:first-child {
+                flex: 0 1 auto;
+                min-width: 0;
+            }
+            body.mobile-ui #app > header > div:last-child {
+                flex: 1;
+                justify-content: flex-end;
+                min-width: 0;
+                padding-bottom: 0;
+            }
+        }
         body.mobile-ui .mobile-search-shell {
             display: block;
         }
