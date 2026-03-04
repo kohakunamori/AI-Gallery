@@ -859,6 +859,7 @@
     <div id="ai-settings-container"></div>
     <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]"></div>
     <div id="preview-modal-container"></div>
+    <div id="sync-modal-container"></div>
     <div id="hover-detail-container"></div>
     <div id="tag-selector-container"></div>
     <div id="comfy-workflow-container"></div>
@@ -876,6 +877,9 @@
         const THEME_KEY = 'nai-theme-preference';
         const AI_CONFIG_KEY = 'nai-ai-config';
         const DISPLAY_CONFIG_KEY = 'nai-display-config';
+        const WEBDAV_CONFIG_KEY = 'nai-webdav-config';
+        const S3_CONFIG_KEY = 'nai-s3-config';
+        const SYNC_METHOD_KEY = 'nai-sync-method';
         const GENERATOR_WINDOW_POS_KEY = 'nai-generator-window-pos';
         const NODE_TAG_PRESETS_KEY = 'nai-node-tag-presets';
         const EXPORT_VERSION = 2;
@@ -2181,6 +2185,96 @@
         ];
 
         const getDefaultDisplayConfig = () => ({ showCardInfo: false, blurNSFW: true, layoutPreset: 'balanced', gridCols: 4, tileSize: 'md', customCols: 4, customGap: 24, customAspect: '3/4', styleMode: 'default', backgroundImage: '' });
+        const getDefaultWebdavConfig = () => ({
+            endpoint: '',
+            username: '',
+            password: '',
+            filePath: 'nai_artists_sync.json'
+        });
+        const getDefaultS3Config = () => ({
+            endpoint: '',
+            region: 'us-east-1',
+            bucket: '',
+            objectKey: 'nai_artists_sync.json',
+            accessKeyId: '',
+            secretAccessKey: '',
+            sessionToken: '',
+            forcePathStyle: false,
+            provider: 'custom'
+        });
+        const normalizeWebdavConfig = (input = {}) => {
+            const base = getDefaultWebdavConfig();
+            return {
+                endpoint: String(input.endpoint ?? base.endpoint).trim().replace(/\/+$/, ''),
+                username: String(input.username ?? base.username).trim(),
+                password: String(input.password ?? base.password),
+                filePath: String(input.filePath ?? base.filePath).trim() || base.filePath
+            };
+        };
+        const normalizeS3Config = (input = {}) => {
+            const base = getDefaultS3Config();
+            return {
+                endpoint: String(input.endpoint ?? base.endpoint).trim().replace(/\/+$/, ''),
+                region: String(input.region ?? base.region).trim() || base.region,
+                bucket: String(input.bucket ?? base.bucket).trim(),
+                objectKey: String(input.objectKey ?? base.objectKey).trim() || base.objectKey,
+                accessKeyId: String(input.accessKeyId ?? base.accessKeyId).trim(),
+                secretAccessKey: String(input.secretAccessKey ?? base.secretAccessKey),
+                sessionToken: String(input.sessionToken ?? base.sessionToken),
+                forcePathStyle: !!input.forcePathStyle,
+                provider: String(input.provider ?? base.provider).trim() || 'custom'
+            };
+        };
+        const S3_PROVIDER_PRESETS = [
+            {
+                id: 'aws-s3',
+                name: 'AWS S3',
+                endpoint: 'https://s3.us-east-1.amazonaws.com',
+                region: 'us-east-1',
+                forcePathStyle: false,
+                note: 'endpoint: https://s3.{region}.amazonaws.com'
+            },
+            {
+                id: 'cloudflare-r2',
+                name: 'Cloudflare R2',
+                endpoint: 'https://<account_id>.r2.cloudflarestorage.com',
+                region: 'auto',
+                forcePathStyle: true,
+                note: 'R2 推荐 path-style；region 可用 auto/us-east-1'
+            },
+            {
+                id: 'backblaze-b2',
+                name: 'Backblaze B2 (S3)',
+                endpoint: 'https://s3.us-west-004.backblazeb2.com',
+                region: 'us-west-004',
+                forcePathStyle: false,
+                note: 'region 必须与 bucket 所在区域一致'
+            },
+            {
+                id: 'wasabi',
+                name: 'Wasabi',
+                endpoint: 'https://s3.us-east-1.wasabisys.com',
+                region: 'us-east-1',
+                forcePathStyle: false,
+                note: 'endpoint: https://s3.{region}.wasabisys.com'
+            },
+            {
+                id: 'do-spaces',
+                name: 'DigitalOcean Spaces',
+                endpoint: 'https://nyc3.digitaloceanspaces.com',
+                region: 'nyc3',
+                forcePathStyle: false,
+                note: 'region 例：nyc3/sfo3/ams3'
+            },
+            {
+                id: 'minio',
+                name: 'MinIO (self-hosted)',
+                endpoint: 'https://minio.example.com',
+                region: 'us-east-1',
+                forcePathStyle: true,
+                note: '多数部署使用 path-style'
+            }
+        ];
 
         const readGeneratorWindowPosition = () => {
             try {
@@ -2399,10 +2493,31 @@
                 merged.styleMode = merged.styleMode === 'liquid-glass' ? 'liquid-glass' : 'default';
                 return merged;
             })(),
+            webdavConfig: (() => {
+                try {
+                    const parsed = JSON.parse(localStorage.getItem(WEBDAV_CONFIG_KEY) || '{}');
+                    return normalizeWebdavConfig(parsed);
+                } catch (_) {
+                    return getDefaultWebdavConfig();
+                }
+            })(),
+            s3Config: (() => {
+                try {
+                    const parsed = JSON.parse(localStorage.getItem(S3_CONFIG_KEY) || '{}');
+                    return normalizeS3Config(parsed);
+                } catch (_) {
+                    return getDefaultS3Config();
+                }
+            })(),
+            syncMethod: (() => {
+                const raw = String(localStorage.getItem(SYNC_METHOD_KEY) || 'webdav').toLowerCase();
+                return raw === 's3' ? 's3' : 'webdav';
+            })(),
             nodeTagPresets: initialNodeTagPresets,
             activeNodeTagPresetId: initialNodeTagPresets[0]?.id || '',
             isNodeTagPresetOpen: false,
             isAISettingsOpen: false,
+            isSyncModalOpen: false,
             comfyWorkflowData: null,
             showComfyWorkflow: false
         };
@@ -2563,6 +2678,18 @@
                 applyDisplayPersonalization(state.displayConfig);
             }
 
+            if (newState.webdavConfig) {
+                localStorage.setItem(WEBDAV_CONFIG_KEY, JSON.stringify(normalizeWebdavConfig(state.webdavConfig)));
+            }
+
+            if (newState.s3Config) {
+                localStorage.setItem(S3_CONFIG_KEY, JSON.stringify(normalizeS3Config(state.s3Config)));
+            }
+
+            if (newState.syncMethod) {
+                localStorage.setItem(SYNC_METHOD_KEY, state.syncMethod === 's3' ? 's3' : 'webdav');
+            }
+
             if (newState.nodeTagPresets !== undefined) {
                 localStorage.setItem(NODE_TAG_PRESETS_KEY, JSON.stringify(normalizeNodeTagPresetList(state.nodeTagPresets)));
             }
@@ -2576,7 +2703,10 @@
                         renderArtistCards(); 
                         renderSelectionArea(); 
                     }
-                    if (newState.isModalOpen !== undefined || newState.isAISettingsOpen !== undefined) renderModals();
+                    if (newState.isModalOpen !== undefined || newState.isAISettingsOpen !== undefined || newState.isSyncModalOpen !== undefined) renderModals();
+                    if (newState.syncMethod !== undefined || newState.webdavConfig !== undefined || newState.s3Config !== undefined) {
+                        if (state.isSyncModalOpen) renderModals();
+                    }
                     if (newState.previewImage !== undefined || newState.viewingNote !== undefined) renderModals();
                     if (newState.tagSelector !== undefined) renderModals();
                     if (newState.isNodeTagPresetOpen !== undefined || newState.nodeTagPresets !== undefined || newState.activeNodeTagPresetId !== undefined) renderModals();
@@ -2602,6 +2732,7 @@
         };
         
         window.openLayoutSettings = () => updateState({ isAISettingsOpen: true });
+        window.openSyncSettings = () => updateState({ isSyncModalOpen: true });
 
         window.setLayoutPreset = (preset) => {
             const base = state.displayConfig || {};
@@ -3103,16 +3234,20 @@
         };
 
         // --- Import / Export ---
+        const buildExportPayload = async () => {
+            const imageMap = await getAllImagesFromIDB({ forExport: true });
+            const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
+            return {
+                version: EXPORT_VERSION,
+                exportedAt: new Date().toISOString(),
+                categories: normalizeCategoryList(state.categories),
+                artists: fullData
+            };
+        };
+
         window.handleExport = async () => {
             try {
-                const imageMap = await getAllImagesFromIDB({ forExport: true });
-                const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
-                const exportPayload = {
-                    version: EXPORT_VERSION,
-                    exportedAt: new Date().toISOString(),
-                    categories: normalizeCategoryList(state.categories),
-                    artists: fullData
-                };
+                const exportPayload = await buildExportPayload();
                 const jsonStr = JSON.stringify(exportPayload, null, 2);
                 const blob = new Blob([jsonStr], { type: "application/json" });
                 const url = URL.createObjectURL(blob);
@@ -3179,6 +3314,431 @@
             };
         };
 
+        const mergeImportResolvedPayload = async (resolved) => {
+            const importList = normalizeArtistList(resolved.artists || []);
+
+            const currentTags = new Set(state.liveArtists.map(a => a.tag));
+            const newArtists = [...state.liveArtists];
+            const importedCategories = new Set(normalizeCategoryList(resolved.categories));
+            let addedCount = 0;
+            let skippedInvalid = 0;
+
+            for (const item of importList) {
+                const tag = String(item?.tag || '').trim();
+                if (!tag) { skippedInvalid++; continue; }
+                if (currentTags.has(tag)) continue;
+
+                const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+                if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
+                    await saveImageToIDB(id, item.imageUrl);
+                }
+
+                const category = normalizeCategoryName(item.category);
+                if (category) importedCategories.add(category);
+
+                const normalizedArtist = normalizeArtistRecord({
+                    id,
+                    name: item.name || tag,
+                    tag,
+                    category,
+                    imageUrl: item.imageUrl || '',
+                    danbooruCount: parseInt(item.danbooruCount, 10) || 0,
+                    isFavorite: !!item.isFavorite,
+                    isNSFW: !!item.isNSFW,
+                    note: item.note || '',
+                    generatorType: normalizeGeneratorType(item.generatorType),
+                    aiModel: item.aiModel || '',
+                    styleTag: item.styleTag || '',
+                    characterTag: item.characterTag || '',
+                    clothingTag: item.clothingTag || '',
+                    cfgScale: item.cfgScale || '',
+                    seed: item.seed || '',
+                    steps: item.steps || '',
+                    sampler: item.sampler || '',
+                    modelHash: item.modelHash || '',
+                    createdAt: item.createdAt || Date.now()
+                });
+
+                newArtists.push(normalizedArtist);
+                currentTags.add(tag);
+                addedCount++;
+            }
+
+            const mergedCategories = normalizeCategoryList([
+                ...state.categories,
+                ...Array.from(importedCategories),
+                ...buildKnownCategoriesFromArtists(newArtists)
+            ]);
+            const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
+
+            updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory });
+            return { addedCount, skippedInvalid };
+        };
+
+        const encodeBasicAuth = (username, password) => {
+            const raw = `${String(username || '')}:${String(password || '')}`;
+            return btoa(unescape(encodeURIComponent(raw)));
+        };
+
+        const resolveWebdavTargetUrl = (config) => {
+            const endpoint = String(config?.endpoint || '').trim().replace(/\/+$/, '');
+            const filePath = String(config?.filePath || '').trim().replace(/^\/+/, '');
+            if (!endpoint || !filePath) return '';
+            return `${endpoint}/${filePath}`;
+        };
+
+        const getWebdavHeaders = (config, extra = {}) => {
+            const headers = { ...extra };
+            if (config?.username) {
+                headers.Authorization = `Basic ${encodeBasicAuth(config.username, config.password || '')}`;
+            }
+            return headers;
+        };
+
+        const hexEncode = (buffer) => Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
+        const utf8Bytes = (text) => new TextEncoder().encode(String(text ?? ''));
+        const sha256Hex = async (text) => {
+            const digest = await crypto.subtle.digest('SHA-256', utf8Bytes(text));
+            return hexEncode(digest);
+        };
+        const hmacSha256 = async (keyBytes, dataText) => {
+            const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+            const sig = await crypto.subtle.sign('HMAC', cryptoKey, utf8Bytes(dataText));
+            return new Uint8Array(sig);
+        };
+        const encodeRfc3986 = (value) => encodeURIComponent(value).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
+        const toAmzDatePair = (date = new Date()) => {
+            const yyyy = date.getUTCFullYear();
+            const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+            const dd = String(date.getUTCDate()).padStart(2, '0');
+            const hh = String(date.getUTCHours()).padStart(2, '0');
+            const min = String(date.getUTCMinutes()).padStart(2, '0');
+            const sec = String(date.getUTCSeconds()).padStart(2, '0');
+            const dateStamp = `${yyyy}${mm}${dd}`;
+            return { dateStamp, amzDate: `${dateStamp}T${hh}${min}${sec}Z` };
+        };
+        const trimSlashes = (value) => String(value || '').replace(/^\/+|\/+$/g, '');
+        const buildS3RequestInfo = (config) => {
+            const cfg = normalizeS3Config(config || {});
+            if (!cfg.endpoint || !cfg.bucket || !cfg.objectKey) return null;
+            const base = new URL(cfg.endpoint);
+            const basePath = trimSlashes(base.pathname);
+            const encodedObjectKey = cfg.objectKey.split('/').map((part) => encodeRfc3986(part)).join('/');
+            let hostname = base.hostname;
+            let pathname = '';
+            if (cfg.forcePathStyle) {
+                pathname = `/${[basePath, encodeRfc3986(cfg.bucket), encodedObjectKey].filter(Boolean).join('/')}`;
+            } else {
+                hostname = `${cfg.bucket}.${base.hostname}`;
+                pathname = `/${[basePath, encodedObjectKey].filter(Boolean).join('/')}`;
+            }
+            const url = `${base.protocol}//${hostname}${base.port ? `:${base.port}` : ''}${pathname}`;
+            return {
+                url,
+                hostHeader: `${hostname}${base.port ? `:${base.port}` : ''}`,
+                region: cfg.region,
+                accessKeyId: cfg.accessKeyId,
+                secretAccessKey: cfg.secretAccessKey,
+                sessionToken: cfg.sessionToken
+            };
+        };
+        const signS3Request = async ({ method, requestInfo, payload = '', contentType = '' }) => {
+            if (!requestInfo) throw new Error('缺少 S3 目标配置');
+            if (!requestInfo.accessKeyId || !requestInfo.secretAccessKey) throw new Error('请填写 S3 AccessKey / SecretKey');
+
+            const { dateStamp, amzDate } = toAmzDatePair(new Date());
+            const credentialScope = `${dateStamp}/${requestInfo.region}/s3/aws4_request`;
+            const payloadHash = await sha256Hex(payload);
+            const canonicalUri = new URL(requestInfo.url).pathname || '/';
+
+            const canonicalHeadersMap = {
+                host: requestInfo.hostHeader,
+                'x-amz-content-sha256': payloadHash,
+                'x-amz-date': amzDate
+            };
+            if (requestInfo.sessionToken) canonicalHeadersMap['x-amz-security-token'] = requestInfo.sessionToken;
+
+            const sortedHeaderKeys = Object.keys(canonicalHeadersMap).sort();
+            const canonicalHeaders = `${sortedHeaderKeys.map((k) => `${k}:${String(canonicalHeadersMap[k]).trim()}\n`).join('')}`;
+            const signedHeaders = sortedHeaderKeys.join(';');
+            const canonicalRequest = [
+                method,
+                canonicalUri,
+                '',
+                canonicalHeaders,
+                signedHeaders,
+                payloadHash
+            ].join('\n');
+            const canonicalRequestHash = await sha256Hex(canonicalRequest);
+            const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${canonicalRequestHash}`;
+
+            const kDate = await hmacSha256(utf8Bytes(`AWS4${requestInfo.secretAccessKey}`), dateStamp);
+            const kRegion = await hmacSha256(kDate, requestInfo.region);
+            const kService = await hmacSha256(kRegion, 's3');
+            const kSigning = await hmacSha256(kService, 'aws4_request');
+            const signature = hexEncode(await hmacSha256(kSigning, stringToSign));
+
+            const headers = {
+                'x-amz-date': amzDate,
+                'x-amz-content-sha256': payloadHash,
+                Authorization: `AWS4-HMAC-SHA256 Credential=${requestInfo.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
+            };
+            if (requestInfo.sessionToken) headers['x-amz-security-token'] = requestInfo.sessionToken;
+            if (contentType) headers['Content-Type'] = contentType;
+            return headers;
+        };
+
+        const parseS3ErrorXml = (rawText) => {
+            const text = String(rawText || '');
+            const pick = (tag) => {
+                const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+                return match ? String(match[1]).trim() : '';
+            };
+            return {
+                code: pick('Code'),
+                message: pick('Message'),
+                requestId: pick('RequestId') || pick('RequestID')
+            };
+        };
+
+        const buildStorageHttpError = async (response, prefix) => {
+            const fallback = `${prefix} (HTTP ${response?.status || 'unknown'})`;
+            if (!response) return new Error(fallback);
+            let text = '';
+            try { text = await response.text(); } catch (_) {}
+            const parsed = parseS3ErrorXml(text);
+            const detail = parsed.code
+                ? `${parsed.code}${parsed.message ? `: ${parsed.message}` : ''}`
+                : (text ? text.replace(/\s+/g, ' ').slice(0, 180) : '');
+            const reqInfo = parsed.requestId ? ` (RequestId: ${parsed.requestId})` : '';
+            return new Error(`${fallback}${detail ? ` - ${detail}` : ''}${reqInfo}`);
+        };
+
+        const shouldRetryR2WithUsEast1 = (cfg, responseText = '', status = 0) => {
+            const endpoint = String(cfg?.endpoint || '').toLowerCase();
+            const region = String(cfg?.region || '').toLowerCase();
+            if (!endpoint.includes('r2.cloudflarestorage.com')) return false;
+            if (region !== 'auto') return false;
+            if (status !== 403 && status !== 400) return false;
+            const text = String(responseText || '').toLowerCase();
+            return text.includes('signaturedoesnotmatch')
+                || text.includes('authorizationheadermalformed')
+                || text.includes('invalidregion')
+                || text.includes('credential');
+        };
+
+        const webdavUpload = async () => {
+            const cfg = normalizeWebdavConfig(state.webdavConfig || {});
+            const targetUrl = resolveWebdavTargetUrl(cfg);
+            if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
+            const payload = await buildExportPayload();
+            const response = await fetch(targetUrl, {
+                method: 'PUT',
+                headers: getWebdavHeaders(cfg, { 'Content-Type': 'application/json; charset=utf-8' }),
+                body: JSON.stringify(payload, null, 2)
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return 'WebDAV';
+        };
+
+        const webdavDownload = async () => {
+            const cfg = normalizeWebdavConfig(state.webdavConfig || {});
+            const targetUrl = resolveWebdavTargetUrl(cfg);
+            if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
+            const response = await fetch(targetUrl, {
+                method: 'GET',
+                headers: getWebdavHeaders(cfg, { Accept: 'application/json' })
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return JSON.parse(await response.text());
+        };
+
+        const s3Upload = async () => {
+            const cfg = normalizeS3Config(state.s3Config || {});
+            const requestInfo = buildS3RequestInfo(cfg);
+            if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            const payloadObj = await buildExportPayload();
+            const payload = JSON.stringify(payloadObj, null, 2);
+            let headers = await signS3Request({
+                method: 'PUT',
+                requestInfo,
+                payload,
+                contentType: 'application/json; charset=utf-8'
+            });
+            let response = await fetch(requestInfo.url, { method: 'PUT', headers, body: payload, mode: 'cors', credentials: 'omit' });
+            if (!response.ok) {
+                let responseText = '';
+                try { responseText = await response.text(); } catch (_) {}
+                if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
+                    const retryInfo = { ...requestInfo, region: 'us-east-1' };
+                    headers = await signS3Request({ method: 'PUT', requestInfo: retryInfo, payload, contentType: 'application/json; charset=utf-8' });
+                    response = await fetch(retryInfo.url, { method: 'PUT', headers, body: payload, mode: 'cors', credentials: 'omit' });
+                    if (response.ok) return 'S3';
+                }
+                throw await buildStorageHttpError(response, 'S3 上传失败');
+            }
+            return 'S3';
+        };
+
+        const s3Download = async () => {
+            const cfg = normalizeS3Config(state.s3Config || {});
+            const requestInfo = buildS3RequestInfo(cfg);
+            if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            let headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
+            let response = await fetch(requestInfo.url, { method: 'GET', headers, mode: 'cors', credentials: 'omit' });
+            if (!response.ok) {
+                let responseText = '';
+                try { responseText = await response.text(); } catch (_) {}
+                if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
+                    const retryInfo = { ...requestInfo, region: 'us-east-1' };
+                    headers = await signS3Request({ method: 'GET', requestInfo: retryInfo, payload: '' });
+                    response = await fetch(retryInfo.url, { method: 'GET', headers, mode: 'cors', credentials: 'omit' });
+                    if (response.ok) return JSON.parse(await response.text());
+                }
+                throw await buildStorageHttpError(response, 'S3 拉取失败');
+            }
+            return JSON.parse(await response.text());
+        };
+
+        window.closeSyncModal = () => updateState({ isSyncModalOpen: false });
+        window.handleSyncMethodChange = (method) => {
+            updateState({ syncMethod: method === 's3' ? 's3' : 'webdav' });
+        };
+        window.applyS3ProviderPreset = (presetId) => {
+            const preset = S3_PROVIDER_PRESETS.find((item) => item.id === presetId);
+            if (!preset) return;
+            const merged = normalizeS3Config({ ...state.s3Config, ...preset, provider: preset.id });
+            updateState({ s3Config: merged });
+            showToast(`已套用 ${preset.name} 示例`);
+        };
+        const readSyncDraftFromInputs = () => {
+            const currentWebdav = normalizeWebdavConfig(state.webdavConfig || {});
+            const currentS3 = normalizeS3Config(state.s3Config || {});
+            const pickValue = (id, fallback = '') => {
+                const el = document.getElementById(id);
+                return el && typeof el.value === 'string' ? el.value : fallback;
+            };
+            const pickChecked = (id, fallback = false) => {
+                const el = document.getElementById(id);
+                return el && typeof el.checked === 'boolean' ? !!el.checked : !!fallback;
+            };
+
+            const syncMethodRaw = pickValue('sync-method-select', state.syncMethod || 'webdav');
+            const syncMethod = String(syncMethodRaw || '').toLowerCase() === 's3' ? 's3' : 'webdav';
+            const webdavConfig = normalizeWebdavConfig({
+                endpoint: pickValue('webdav-endpoint-input', currentWebdav.endpoint),
+                username: pickValue('webdav-username-input', currentWebdav.username),
+                password: pickValue('webdav-password-input', currentWebdav.password),
+                filePath: pickValue('webdav-filepath-input', currentWebdav.filePath)
+            });
+            const s3Config = normalizeS3Config({
+                endpoint: pickValue('s3-endpoint-input', currentS3.endpoint),
+                region: pickValue('s3-region-input', currentS3.region),
+                bucket: pickValue('s3-bucket-input', currentS3.bucket),
+                objectKey: pickValue('s3-objectkey-input', currentS3.objectKey),
+                accessKeyId: pickValue('s3-accesskey-input', currentS3.accessKeyId),
+                secretAccessKey: pickValue('s3-secretkey-input', currentS3.secretAccessKey),
+                sessionToken: pickValue('s3-sessiontoken-input', currentS3.sessionToken),
+                forcePathStyle: pickChecked('s3-force-path-style-input', currentS3.forcePathStyle),
+                provider: pickValue('s3-provider-select', currentS3.provider)
+            });
+            return { syncMethod, webdavConfig, s3Config };
+        };
+        window.exportSyncSettings = () => {
+            try {
+                const draft = readSyncDraftFromInputs();
+                const exportPayload = {
+                    version: 1,
+                    exportedAt: new Date().toISOString(),
+                    syncMethod: draft.syncMethod,
+                    webdavConfig: draft.webdavConfig,
+                    s3Config: draft.s3Config
+                };
+                const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `nai_sync_config_${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                showToast('同步配置已导出');
+            } catch (error) {
+                console.error('Export sync config failed', error);
+                showToast(`导出失败: ${error.message || '未知错误'}`);
+            }
+        };
+        window.triggerSyncConfigImport = () => {
+            const input = document.getElementById('sync-config-import-input');
+            if (input) input.click();
+        };
+        window.handleSyncConfigImport = (event) => {
+            const file = event?.target?.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = async (ev) => {
+                try {
+                    const rawText = String(ev?.target?.result || '').trim();
+                    if (!rawText) throw new Error('Empty file');
+                    const parsed = JSON.parse(rawText);
+                    const source = parsed && typeof parsed === 'object' && parsed.config && typeof parsed.config === 'object' ? parsed.config : parsed;
+                    const syncMethod = String(source?.syncMethod || '').toLowerCase() === 's3' ? 's3' : 'webdav';
+                    const webdavConfig = normalizeWebdavConfig(source?.webdavConfig || source?.webdav || {});
+                    const s3Config = normalizeS3Config(source?.s3Config || source?.s3 || {});
+                    updateState({ syncMethod, webdavConfig, s3Config });
+                    showToast('同步配置已导入');
+                } catch (error) {
+                    console.error('Import sync config failed', error);
+                    showToast('同步配置导入失败: JSON 格式错误');
+                } finally {
+                    if (event?.target) event.target.value = '';
+                }
+            };
+            reader.readAsText(file);
+        };
+        window.saveSyncSettings = () => {
+            const draft = readSyncDraftFromInputs();
+
+            updateState({
+                syncMethod: draft.syncMethod,
+                webdavConfig: draft.webdavConfig,
+                s3Config: draft.s3Config,
+                isSyncModalOpen: false
+            });
+            showToast('同步配置已保存');
+        };
+        window.saveWebdavSettings = window.saveSyncSettings;
+
+        window.manualSyncUpload = async () => {
+            try {
+                const channel = state.syncMethod === 's3' ? await s3Upload() : await webdavUpload();
+                showToast(`已同步到 ${channel}`);
+            } catch (error) {
+                console.error('Sync upload failed', error);
+                const message = String(error?.message || '网络错误');
+                showToast(`同步失败: ${message.includes('Failed to fetch') ? '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS' : message}`);
+            }
+        };
+
+        window.manualSyncDownload = async () => {
+            try {
+                const channel = state.syncMethod === 's3' ? 'S3' : 'WebDAV';
+                const rawJson = state.syncMethod === 's3' ? await s3Download() : await webdavDownload();
+                const resolved = resolveImportPayload(rawJson);
+                const { addedCount, skippedInvalid } = await mergeImportResolvedPayload(resolved);
+                if (addedCount > 0) {
+                    showToast(skippedInvalid > 0 ? `从 ${channel} 同步 ${addedCount} 条（跳过 ${skippedInvalid} 条）` : `从 ${channel} 同步 ${addedCount} 条`);
+                } else {
+                    showToast(`${channel} 无新增数据`);
+                }
+            } catch (error) {
+                console.error('Sync download failed', error);
+                const message = String(error?.message || '网络错误');
+                showToast(`拉取失败: ${message.includes('Failed to fetch') ? '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS' : message}`);
+            }
+        };
+
         window.handleImport = (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -3189,64 +3749,7 @@
                     if (!rawText) throw new Error('Empty file');
                     const rawJson = JSON.parse(rawText);
                     const resolved = resolveImportPayload(rawJson);
-                    const importList = normalizeArtistList(resolved.artists || []);
-
-                    const currentTags = new Set(state.liveArtists.map(a => a.tag));
-                    const newArtists = [...state.liveArtists];
-                    const importedCategories = new Set(normalizeCategoryList(resolved.categories));
-                    let addedCount = 0;
-                    let skippedInvalid = 0;
-
-                    for (const item of importList) {
-                        const tag = String(item?.tag || '').trim();
-                        if (!tag) { skippedInvalid++; continue; }
-                        if (currentTags.has(tag)) continue;
-
-                        const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-                        if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
-                            await saveImageToIDB(id, item.imageUrl);
-                        }
-
-                        const category = normalizeCategoryName(item.category);
-                        if (category) importedCategories.add(category);
-
-                        const normalizedArtist = normalizeArtistRecord({
-                            id,
-                            name: item.name || tag,
-                            tag,
-                            category,
-                            imageUrl: item.imageUrl || '',
-                            danbooruCount: parseInt(item.danbooruCount, 10) || 0,
-                            isFavorite: !!item.isFavorite,
-                            isNSFW: !!item.isNSFW,
-                            note: item.note || '',
-                            generatorType: normalizeGeneratorType(item.generatorType),
-                            aiModel: item.aiModel || '',
-                            styleTag: item.styleTag || '',
-                            characterTag: item.characterTag || '',
-                            clothingTag: item.clothingTag || '',
-                            cfgScale: item.cfgScale || '',
-                            seed: item.seed || '',
-                            steps: item.steps || '',
-                            sampler: item.sampler || '',
-                            modelHash: item.modelHash || '',
-                            createdAt: item.createdAt || Date.now()
-                        });
-
-                        newArtists.push(normalizedArtist);
-                        currentTags.add(tag);
-                        addedCount++;
-                    }
-
-                    const mergedCategories = normalizeCategoryList([
-                        ...state.categories,
-                        ...Array.from(importedCategories),
-                        ...buildKnownCategoriesFromArtists(newArtists)
-                    ]);
-
-                    const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
-
-                    updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory });
+                    const { addedCount, skippedInvalid } = await mergeImportResolvedPayload(resolved);
                     if (addedCount > 0) {
                         showToast(skippedInvalid > 0 ? `成功导入 ${addedCount} 位画师（跳过 ${skippedInvalid} 条无效数据）` : `成功导入 ${addedCount} 位画师`);
                     } else {
@@ -3749,6 +4252,10 @@
                                 <i data-lucide="settings" class="w-6 h-6 text-indigo-500"></i>
                             </button>
 
+                            <button onclick="openSyncSettings()" title="同步" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
+                                <i data-lucide="refresh-cw" class="w-6 h-6 text-indigo-500"></i>
+                            </button>
+
                             <!-- Theme Toggle -->\n                            <button onclick="toggleTheme()" title="切换深浅色" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
                                 <i data-lucide="sun" class="w-6 h-6 text-indigo-500 dark:hidden"></i>
                                 <i data-lucide="moon" class="w-6 h-6 text-indigo-400 hidden dark:block"></i>
@@ -4028,8 +4535,149 @@
         const renderModals = () => {
             const container = document.getElementById('modal-container');
             const aiContainer = document.getElementById('ai-settings-container');
+            const syncContainer = document.getElementById('sync-modal-container');
             const previewContainer = document.getElementById('preview-modal-container');
             const nodeTagPresetContainer = document.getElementById('node-tag-preset-container');
+
+            if (state.isSyncModalOpen) {
+                const syncConfig = normalizeWebdavConfig(state.webdavConfig || {});
+                const s3Config = normalizeS3Config(state.s3Config || {});
+                const syncMethod = state.syncMethod === 's3' ? 's3' : 'webdav';
+                const safeEndpoint = escapeHtml(syncConfig.endpoint || '');
+                const safeUsername = escapeHtml(syncConfig.username || '');
+                const safePassword = escapeHtml(syncConfig.password || '');
+                const safeFilePath = escapeHtml(syncConfig.filePath || 'nai_artists_sync.json');
+                const safeS3Endpoint = escapeHtml(s3Config.endpoint || '');
+                const safeS3Region = escapeHtml(s3Config.region || 'us-east-1');
+                const safeS3Bucket = escapeHtml(s3Config.bucket || '');
+                const safeS3ObjectKey = escapeHtml(s3Config.objectKey || 'nai_artists_sync.json');
+                const safeS3AccessKeyId = escapeHtml(s3Config.accessKeyId || '');
+                const safeS3SecretAccessKey = escapeHtml(s3Config.secretAccessKey || '');
+                const safeS3SessionToken = escapeHtml(s3Config.sessionToken || '');
+                syncContainer.innerHTML = `
+                    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; z-index: 70; padding: 1rem;" class="animate-fade-in">
+                        <div class="absolute inset-0 bg-slate-900/40 dark:bg-black/65 backdrop-blur-md" onclick="closeSyncModal()"></div>
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[2rem] shadow-2xl p-5 md:p-6 relative z-20 w-full max-w-2xl border dark:border-slate-700 max-h-[90vh] overflow-hidden flex flex-col">
+                            <button onclick="closeSyncModal()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            <h2 class="text-xl md:text-2xl font-bold text-slate-800 dark:text-white mb-4 md:mb-5 flex items-center gap-3 pr-10"><span class="w-2 h-7 bg-indigo-500 rounded-full"></span>同步配置</h2>
+                            <div class="flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar space-y-4">
+                                <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">同步方式</label>
+                                        <select id="sync-method-select" onchange="handleSyncMethodChange(this.value)" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm">
+                                            <option value="webdav" ${syncMethod === 'webdav' ? 'selected' : ''}>WebDAV</option>
+                                            <option value="s3" ${syncMethod === 's3' ? 'selected' : ''}>S3 Compatible Storage</option>
+                                        </select>
+                                    </div>
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        <button onclick="exportSyncSettings()" class="btn-icon liquid-action w-full py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold hover:border-indigo-300 dark:hover:border-indigo-700 transition-all flex items-center justify-center gap-2">
+                                            <i data-lucide="download" class="w-4 h-4"></i>一键导出同步配置
+                                        </button>
+                                        <button onclick="triggerSyncConfigImport()" class="btn-icon liquid-action w-full py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold hover:border-indigo-300 dark:hover:border-indigo-700 transition-all flex items-center justify-center gap-2">
+                                            <i data-lucide="upload" class="w-4 h-4"></i>一键导入同步配置
+                                        </button>
+                                    </div>
+                                    <input id="sync-config-import-input" type="file" accept=".json,application/json" class="hidden" onchange="handleSyncConfigImport(event)">
+                                    <p class="text-[11px] text-slate-500 dark:text-slate-400">导入会覆盖当前同步方式、WebDAV 与 S3 配置（不会改动画师数据）。</p>
+                                </div>
+
+                                ${syncMethod === 'webdav' ? `
+                                <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">WebDAV 地址</label>
+                                        <input type="text" id="webdav-endpoint-input" value="${safeEndpoint}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="https://dav.example.com/remote.php/dav/files/username">
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">用户名</label>
+                                            <input type="text" id="webdav-username-input" value="${safeUsername}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="username">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">密码 / 应用专用密码</label>
+                                            <input type="password" id="webdav-password-input" value="${safePassword}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="password">
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">远程文件路径</label>
+                                        <input type="text" id="webdav-filepath-input" value="${safeFilePath}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="AIGallery/nai_artists_sync.json">
+                                    </div>
+                                </div>` : `
+                                <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-3">
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">S3 运营商示例</label>
+                                        <select id="s3-provider-select" onchange="applyS3ProviderPreset(this.value)" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm">
+                                            <option value="custom" ${s3Config.provider === 'custom' ? 'selected' : ''}>自定义</option>
+                                            ${S3_PROVIDER_PRESETS.map((p) => `<option value="${escapeHtml(p.id)}" ${s3Config.provider === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">S3 Endpoint</label>
+                                        <input type="text" id="s3-endpoint-input" value="${safeS3Endpoint}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="https://s3.us-east-1.amazonaws.com">
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Region</label>
+                                            <input type="text" id="s3-region-input" value="${safeS3Region}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="us-east-1">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Bucket</label>
+                                            <input type="text" id="s3-bucket-input" value="${safeS3Bucket}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="my-bucket">
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">对象路径 (Object Key)</label>
+                                        <input type="text" id="s3-objectkey-input" value="${safeS3ObjectKey}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="AIGallery/nai_artists_sync.json">
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Access Key ID</label>
+                                            <input type="text" id="s3-accesskey-input" value="${safeS3AccessKeyId}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="AKIA...">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Secret Access Key</label>
+                                            <input type="password" id="s3-secretkey-input" value="${safeS3SecretAccessKey}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="secret">
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">Session Token (可选)</label>
+                                        <input type="text" id="s3-sessiontoken-input" value="${safeS3SessionToken}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="STS Token">
+                                    </div>
+                                    <label class="flex items-center gap-3 cursor-pointer bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-800 transition-colors">
+                                        <input type="checkbox" id="s3-force-path-style-input" ${s3Config.forcePathStyle ? 'checked' : ''} class="w-4 h-4 text-indigo-500 bg-slate-100 border-slate-300 rounded focus:ring-indigo-500 dark:focus:ring-indigo-600 dark:ring-offset-slate-800 focus:ring-2 dark:bg-slate-700 dark:border-slate-600">
+                                        <div class="flex-1">
+                                            <span class="text-sm font-bold text-slate-700 dark:text-slate-200">使用 Path-Style</span>
+                                            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">R2 / MinIO 推荐开启；AWS/Wasabi/Spaces 多数关闭。</p>
+                                        </div>
+                                    </label>
+                                    <div class="rounded-xl bg-slate-100/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 p-3 text-[11px] text-slate-600 dark:text-slate-300 space-y-1.5 leading-relaxed">
+                                        <p class="font-bold text-slate-700 dark:text-slate-200">第三方配置示例（可直接套用）</p>
+                                        ${S3_PROVIDER_PRESETS.map((p) => `<p><span class="font-semibold">${escapeHtml(p.name)}：</span>${escapeHtml(p.note)}</p>`).join('')}
+                                        <p class="pt-1">浏览器直连对象存储需配置 CORS（允许来源、Authorization、x-amz-date、x-amz-content-sha256、x-amz-security-token 等头），并确保本机时间准确（SigV4 对时钟偏差敏感）。</p>
+                                    </div>
+                                </div>`}
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <button onclick="manualSyncUpload()" class="btn-icon liquid-action-tint w-full py-3 rounded-xl bg-indigo-600 text-white font-bold shadow-lg hover:bg-indigo-500 transition-all flex items-center justify-center gap-2">
+                                        <i data-lucide="upload" class="w-4 h-4"></i>${syncMethod === 's3' ? '手动同步到 S3' : '手动同步到 WebDAV'}
+                                    </button>
+                                    <button onclick="manualSyncDownload()" class="btn-icon liquid-action w-full py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:border-indigo-300 dark:hover:border-indigo-700 transition-all flex items-center justify-center gap-2">
+                                        <i data-lucide="download" class="w-4 h-4"></i>${syncMethod === 's3' ? '从 S3 拉取并合并' : '从 WebDAV 拉取并合并'}
+                                    </button>
+                                </div>
+                                <p class="text-xs text-slate-500 dark:text-slate-400">提示：浏览器直连远程存储都需要服务端允许 CORS。建议使用应用专用密钥而非主账号密码。</p>
+                            </div>
+
+                            <div class="mt-4 flex gap-3 md:gap-4 flex-shrink-0 pt-4 border-t border-slate-200 dark:border-slate-700">
+                                <button onclick="closeSyncModal()" class="btn-icon liquid-action flex-1 py-2.5 md:py-3 rounded-2xl text-slate-600 dark:text-slate-300 font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-sm">关闭</button>
+                                <button onclick="saveSyncSettings()" class="btn-icon liquid-action-tint flex-1 py-2.5 md:py-3 rounded-2xl bg-indigo-600 text-white font-bold shadow-xl hover:bg-indigo-500 hover:shadow-indigo-500/40 transition-all text-sm">保存配置</button>
+                            </div>
+                        </div>
+                    </div>`;
+                lucide.createIcons(syncContainer);
+            } else {
+                syncContainer.innerHTML = '';
+            }
 
             // Render AI Settings Modal
             if (state.isAISettingsOpen) {
