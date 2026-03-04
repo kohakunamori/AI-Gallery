@@ -882,7 +882,7 @@
         const SYNC_METHOD_KEY = 'nai-sync-method';
         const GENERATOR_WINDOW_POS_KEY = 'nai-generator-window-pos';
         const NODE_TAG_PRESETS_KEY = 'nai-node-tag-presets';
-        const EXPORT_VERSION = 2;
+        const EXPORT_VERSION = 3;
         const METADATA_EDITOR_PATH = 'C:/Users/gekdanhs/Downloads/AI-Image-Metadata-Editor.html';
 
         // 数据库操作封装
@@ -2185,6 +2185,17 @@
         ];
 
         const getDefaultDisplayConfig = () => ({ showCardInfo: false, blurNSFW: true, layoutPreset: 'balanced', gridCols: 4, tileSize: 'md', customCols: 4, customGap: 24, customAspect: '3/4', styleMode: 'default', backgroundImage: '' });
+        const normalizeDisplayConfig = (input = {}) => {
+            const merged = { ...getDefaultDisplayConfig(), ...(input || {}) };
+            merged.styleMode = merged.styleMode === 'liquid-glass' ? 'liquid-glass' : 'default';
+            return merged;
+        };
+        const normalizeAiConfig = (input = {}) => {
+            const apiHost = String(input?.apiHost || 'https://api.openai.com/v1').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
+            const apiKey = String(input?.apiKey || '').trim();
+            const model = String(input?.model || 'gpt-4o').trim() || 'gpt-4o';
+            return { apiHost, apiKey, model };
+        };
         const getDefaultWebdavConfig = () => ({
             endpoint: '',
             username: '',
@@ -2486,12 +2497,21 @@
             hoverExpandCategory: '',
             formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
             theme: localStorage.getItem(THEME_KEY) || 'light',
-            aiConfig: JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || '{}'),
+            aiConfig: (() => {
+                try {
+                    const parsed = JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || '{}');
+                    return normalizeAiConfig(parsed);
+                } catch (_) {
+                    return normalizeAiConfig({});
+                }
+            })(),
             displayConfig: (() => {
-                const parsed = JSON.parse(localStorage.getItem(DISPLAY_CONFIG_KEY) || '{}');
-                const merged = { ...getDefaultDisplayConfig(), ...parsed };
-                merged.styleMode = merged.styleMode === 'liquid-glass' ? 'liquid-glass' : 'default';
-                return merged;
+                try {
+                    const parsed = JSON.parse(localStorage.getItem(DISPLAY_CONFIG_KEY) || '{}');
+                    return normalizeDisplayConfig(parsed);
+                } catch (_) {
+                    return normalizeDisplayConfig({});
+                }
             })(),
             webdavConfig: (() => {
                 try {
@@ -2676,6 +2696,10 @@
             if (newState.displayConfig) {
                 localStorage.setItem(DISPLAY_CONFIG_KEY, JSON.stringify(state.displayConfig));
                 applyDisplayPersonalization(state.displayConfig);
+            }
+
+            if (newState.aiConfig) {
+                localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(normalizeAiConfig(state.aiConfig || {})));
             }
 
             if (newState.webdavConfig) {
@@ -3234,6 +3258,24 @@
         };
 
         // --- Import / Export ---
+        const buildSyncConfigSnapshot = () => ({
+            syncMethod: state.syncMethod === 's3' ? 's3' : 'webdav',
+            webdavConfig: normalizeWebdavConfig(state.webdavConfig || {}),
+            s3Config: normalizeS3Config(state.s3Config || {})
+        });
+
+        const buildSettingsSnapshot = () => {
+            const normalizedNodeTagPresets = normalizeNodeTagPresetList(state.nodeTagPresets || []);
+            const activePresetId = normalizedNodeTagPresets.find((p) => p.id === state.activeNodeTagPresetId)?.id || normalizedNodeTagPresets[0]?.id || '';
+            return {
+                theme: Object.hasOwn(themes, state.theme) ? state.theme : 'light',
+                aiConfig: normalizeAiConfig(state.aiConfig || {}),
+                displayConfig: normalizeDisplayConfig(state.displayConfig || {}),
+                nodeTagPresets: normalizedNodeTagPresets,
+                activeNodeTagPresetId: activePresetId
+            };
+        };
+
         const buildExportPayload = async () => {
             const imageMap = await getAllImagesFromIDB({ forExport: true });
             const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
@@ -3241,7 +3283,9 @@
                 version: EXPORT_VERSION,
                 exportedAt: new Date().toISOString(),
                 categories: normalizeCategoryList(state.categories),
-                artists: fullData
+                artists: fullData,
+                settings: buildSettingsSnapshot(),
+                syncConfig: buildSyncConfigSnapshot()
             };
         };
 
@@ -3290,27 +3334,92 @@
                 const looksLegacyArray = rawJson.some(item => item && typeof item === 'object' && ('image' in item || 'count' in item || 'time' in item));
                 return {
                     artists: looksLegacyArray ? mapLegacyArtists(rawJson) : rawJson,
-                    categories: []
+                    categories: [],
+                    settingsPatch: null,
+                    syncConfigPatch: null
                 };
             }
             if (!rawJson || typeof rawJson !== 'object') {
-                return { artists: [], categories: [] };
+                return { artists: [], categories: [], settingsPatch: null, syncConfigPatch: null };
             }
             const objArtists = Array.isArray(rawJson.artists) ? rawJson.artists : null;
+            const settingsSource = (() => {
+                if (rawJson && typeof rawJson.settings === 'object') return rawJson.settings;
+                const hasTopLevelSettings = rawJson
+                    && (rawJson.theme !== undefined
+                        || rawJson.aiConfig !== undefined
+                        || rawJson.ai !== undefined
+                        || rawJson.displayConfig !== undefined
+                        || rawJson.display !== undefined
+                        || rawJson.nodeTagPresets !== undefined
+                        || rawJson.comfyNodeTagPresets !== undefined);
+                return hasTopLevelSettings ? rawJson : null;
+            })();
+            const hasSyncSource = (rawJson && typeof rawJson.syncConfig === 'object')
+                || rawJson.syncMethod !== undefined
+                || rawJson.webdavConfig !== undefined
+                || rawJson.s3Config !== undefined
+                || rawJson.webdav !== undefined
+                || rawJson.s3 !== undefined;
+
+            const settingsPatch = (() => {
+                const source = settingsSource;
+                if (!source) return null;
+                const out = {};
+
+                if (source.theme !== undefined) {
+                    const candidateTheme = String(source.theme || '');
+                    if (Object.hasOwn(themes, candidateTheme)) out.theme = candidateTheme;
+                }
+
+                if (source.aiConfig !== undefined || source.ai !== undefined) {
+                    out.aiConfig = normalizeAiConfig(source.aiConfig || source.ai || {});
+                }
+
+                if (source.displayConfig !== undefined || source.display !== undefined) {
+                    out.displayConfig = normalizeDisplayConfig(source.displayConfig || source.display || {});
+                }
+
+                if (source.nodeTagPresets !== undefined || source.comfyNodeTagPresets !== undefined) {
+                    const normalizedPresets = normalizeNodeTagPresetList(source.nodeTagPresets || source.comfyNodeTagPresets || []);
+                    if (normalizedPresets.length) {
+                        out.nodeTagPresets = normalizedPresets;
+                        const rawActivePreset = String(source.activeNodeTagPresetId || source.activePresetId || '').trim();
+                        out.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActivePreset)?.id || normalizedPresets[0].id;
+                    }
+                }
+
+                return Object.keys(out).length ? out : null;
+            })();
+
+            const syncConfigPatch = (() => {
+                if (!hasSyncSource) return null;
+                const source = rawJson && typeof rawJson.syncConfig === 'object' ? rawJson.syncConfig : rawJson;
+                return {
+                    syncMethod: String(source?.syncMethod || '').toLowerCase() === 's3' ? 's3' : 'webdav',
+                    webdavConfig: normalizeWebdavConfig(source?.webdavConfig || source?.webdav || {}),
+                    s3Config: normalizeS3Config(source?.s3Config || source?.s3 || {})
+                };
+            })();
+
             if (!objArtists) {
-                return { artists: [], categories: [] };
+                return { artists: [], categories: [], settingsPatch, syncConfigPatch };
             }
             const isVersioned = Number(rawJson.version) >= 2;
             if (isVersioned) {
                 return {
                     artists: objArtists,
-                    categories: normalizeCategoryList(rawJson.categories)
+                    categories: normalizeCategoryList(rawJson.categories),
+                    settingsPatch,
+                    syncConfigPatch
                 };
             }
             const looksLegacy = objArtists.some(item => item && typeof item === 'object' && ('image' in item || 'count' in item || 'time' in item));
             return {
                 artists: looksLegacy ? mapLegacyArtists(objArtists) : objArtists,
-                categories: normalizeCategoryList(rawJson.categories)
+                categories: normalizeCategoryList(rawJson.categories),
+                settingsPatch,
+                syncConfigPatch
             };
         };
 
@@ -3371,8 +3480,50 @@
             ]);
             const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
 
-            updateState({ liveArtists: newArtists, categories: mergedCategories, activeCategory: nextActiveCategory });
-            return { addedCount, skippedInvalid };
+            const nextStatePatch = {
+                liveArtists: newArtists,
+                categories: mergedCategories,
+                activeCategory: nextActiveCategory
+            };
+
+            let settingsUpdated = false;
+            let syncConfigUpdated = false;
+
+            const settingsPatch = resolved?.settingsPatch;
+            if (settingsPatch && typeof settingsPatch === 'object') {
+                if (settingsPatch.theme && Object.hasOwn(themes, settingsPatch.theme)) {
+                    nextStatePatch.theme = settingsPatch.theme;
+                    settingsUpdated = true;
+                }
+                if (settingsPatch.aiConfig) {
+                    nextStatePatch.aiConfig = normalizeAiConfig(settingsPatch.aiConfig);
+                    settingsUpdated = true;
+                }
+                if (settingsPatch.displayConfig) {
+                    nextStatePatch.displayConfig = normalizeDisplayConfig(settingsPatch.displayConfig);
+                    settingsUpdated = true;
+                }
+                if (Array.isArray(settingsPatch.nodeTagPresets) && settingsPatch.nodeTagPresets.length) {
+                    const normalizedPresets = normalizeNodeTagPresetList(settingsPatch.nodeTagPresets);
+                    if (normalizedPresets.length) {
+                        nextStatePatch.nodeTagPresets = normalizedPresets;
+                        const rawActive = String(settingsPatch.activeNodeTagPresetId || '').trim();
+                        nextStatePatch.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActive)?.id || normalizedPresets[0].id;
+                        settingsUpdated = true;
+                    }
+                }
+            }
+
+            const syncConfigPatch = resolved?.syncConfigPatch;
+            if (syncConfigPatch && typeof syncConfigPatch === 'object') {
+                nextStatePatch.syncMethod = syncConfigPatch.syncMethod === 's3' ? 's3' : 'webdav';
+                nextStatePatch.webdavConfig = normalizeWebdavConfig(syncConfigPatch.webdavConfig || {});
+                nextStatePatch.s3Config = normalizeS3Config(syncConfigPatch.s3Config || {});
+                syncConfigUpdated = true;
+            }
+
+            updateState(nextStatePatch);
+            return { addedCount, skippedInvalid, settingsUpdated, syncConfigUpdated };
         };
 
         const encodeBasicAuth = (username, password) => {
@@ -3726,11 +3877,20 @@
                 const channel = state.syncMethod === 's3' ? 'S3' : 'WebDAV';
                 const rawJson = state.syncMethod === 's3' ? await s3Download() : await webdavDownload();
                 const resolved = resolveImportPayload(rawJson);
-                const { addedCount, skippedInvalid } = await mergeImportResolvedPayload(resolved);
+                const { addedCount, skippedInvalid, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
                 if (addedCount > 0) {
-                    showToast(skippedInvalid > 0 ? `从 ${channel} 同步 ${addedCount} 条（跳过 ${skippedInvalid} 条）` : `从 ${channel} 同步 ${addedCount} 条`);
+                    const baseMsg = skippedInvalid > 0 ? `从 ${channel} 同步 ${addedCount} 条（跳过 ${skippedInvalid} 条）` : `从 ${channel} 同步 ${addedCount} 条`;
+                    const extras = [
+                        settingsUpdated ? '设置已更新' : '',
+                        syncConfigUpdated ? '同步配置已更新' : ''
+                    ].filter(Boolean);
+                    showToast(extras.length ? `${baseMsg}，${extras.join('，')}` : baseMsg);
                 } else {
-                    showToast(`${channel} 无新增数据`);
+                    const extras = [
+                        settingsUpdated ? '设置已更新' : '',
+                        syncConfigUpdated ? '同步配置已更新' : ''
+                    ].filter(Boolean);
+                    showToast(extras.length ? `${channel} 已同步：${extras.join('，')}` : `${channel} 无新增数据`);
                 }
             } catch (error) {
                 console.error('Sync download failed', error);
@@ -3749,11 +3909,20 @@
                     if (!rawText) throw new Error('Empty file');
                     const rawJson = JSON.parse(rawText);
                     const resolved = resolveImportPayload(rawJson);
-                    const { addedCount, skippedInvalid } = await mergeImportResolvedPayload(resolved);
+                    const { addedCount, skippedInvalid, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
                     if (addedCount > 0) {
-                        showToast(skippedInvalid > 0 ? `成功导入 ${addedCount} 位画师（跳过 ${skippedInvalid} 条无效数据）` : `成功导入 ${addedCount} 位画师`);
+                        const baseMsg = skippedInvalid > 0 ? `成功导入 ${addedCount} 位画师（跳过 ${skippedInvalid} 条无效数据）` : `成功导入 ${addedCount} 位画师`;
+                        const extras = [
+                            settingsUpdated ? '设置已更新' : '',
+                            syncConfigUpdated ? '同步配置已更新' : ''
+                        ].filter(Boolean);
+                        showToast(extras.length ? `${baseMsg}，${extras.join('，')}` : baseMsg);
                     } else {
-                        showToast('未发现新数据 (重复或无效数据)');
+                        const extras = [
+                            settingsUpdated ? '设置已更新' : '',
+                            syncConfigUpdated ? '同步配置已更新' : ''
+                        ].filter(Boolean);
+                        showToast(extras.length ? `导入完成：${extras.join('，')}` : '未发现新数据 (重复或无效数据)');
                     }
                 } catch (err) {
                     showToast('导入失败: 格式错误');
@@ -4113,8 +4282,8 @@
              const customAspect = document.getElementById('layout-custom-aspect').value || '3/4';
              const styleMode = document.getElementById('style-mode-select').value || 'default';
               
-             const newConfig = { apiHost, apiKey, model };
-             const newDisplayConfig = { ...getDefaultDisplayConfig(), ...state.displayConfig, showCardInfo, blurNSFW, layoutPreset, customCols, customGap, customAspect, styleMode };
+             const newConfig = normalizeAiConfig({ apiHost, apiKey, model });
+             const newDisplayConfig = normalizeDisplayConfig({ ...state.displayConfig, showCardInfo, blurNSFW, layoutPreset, customCols, customGap, customAspect, styleMode });
              updateState({ aiConfig: newConfig, displayConfig: newDisplayConfig, isAISettingsOpen: false });
              localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(newConfig));
              localStorage.setItem(DISPLAY_CONFIG_KEY, JSON.stringify(newDisplayConfig));
