@@ -819,6 +819,120 @@
             .sidebar-container { display: none; } 
         }
 
+        .mobile-search-shell { display: none; }
+
+        body.mobile-ui #app > header {
+            height: auto;
+            min-height: 4.75rem;
+            padding: 0.75rem;
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: 0.65rem;
+        }
+        body.mobile-ui #app > header > div:last-child {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            overflow-x: auto;
+            overflow-y: hidden;
+            padding-bottom: 0.15rem;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        body.mobile-ui #app > header > div:last-child::-webkit-scrollbar {
+            display: none;
+        }
+        body.mobile-ui #app > header > div:last-child > .h-8.w-px {
+            display: none;
+        }
+        body.mobile-ui #app > header > div:last-child > button {
+            flex: 0 0 auto;
+            padding: 0.62rem;
+            border-radius: 0.95rem;
+        }
+        body.mobile-ui #app > header > div:last-child > button i {
+            width: 1.1rem;
+            height: 1.1rem;
+        }
+        body.mobile-ui #app > header > div:last-child > button[onclick="openAddModal()"] {
+            padding: 0.62rem 0.86rem;
+            gap: 0.35rem;
+        }
+        body.mobile-ui #app > header > div:last-child > button[onclick="openAddModal()"] span {
+            font-size: 0.8rem;
+        }
+        body.mobile-ui .mobile-search-shell {
+            display: block;
+        }
+        body.mobile-ui .desktop-search-shell {
+            display: none !important;
+        }
+        body.mobile-ui .mobile-search-shell input {
+            width: 100%;
+        }
+        body.mobile-ui .app-layout {
+            display: block;
+            padding: 0.55rem;
+            gap: 0.75rem;
+        }
+        body.mobile-ui .golden-ratio-main {
+            min-width: 0;
+            padding: 0.75rem !important;
+        }
+        body.mobile-ui #filters-container {
+            margin-bottom: 0.75rem;
+            padding: 0.35rem 0.1rem 0.4rem;
+            gap: 0.45rem;
+        }
+        body.mobile-ui #filters-container button {
+            padding: 0.48rem 0.78rem;
+            border-radius: 0.85rem;
+            font-size: 0.74rem;
+        }
+        body.mobile-ui #cards-container {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            gap: 0.62rem !important;
+            padding-bottom: 9.25rem;
+        }
+        body.mobile-ui .artist-card .absolute.top-3.right-3 {
+            transform: none !important;
+            opacity: 1 !important;
+        }
+        body.mobile-ui .artist-card button[class*="absolute top-3 left-3"] {
+            opacity: 1 !important;
+            transform: none !important;
+            pointer-events: auto !important;
+        }
+        body.mobile-ui .artist-card div[class*="p-4 absolute bottom-0 left-0 right-0"] {
+            opacity: 1 !important;
+            transform: none !important;
+        }
+        body.mobile-ui .sidebar-container {
+            display: flex !important;
+            left: 0.6rem;
+            right: 0.6rem;
+            width: auto;
+            top: auto;
+            bottom: 0.7rem;
+            height: min(54vh, 430px);
+            z-index: 45;
+            border-radius: 1.15rem;
+        }
+        body.mobile-ui .generator-drag-handle {
+            cursor: default;
+            touch-action: auto;
+        }
+        body.mobile-ui .generator-drag-handle i[data-lucide="grip-horizontal"] {
+            display: none;
+        }
+
+        @media (max-width: 430px) {
+            body.mobile-ui #cards-container {
+                grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+            }
+        }
+
         /* === 主题样式 === */
         body { transition: background 0.5s ease, color 0.3s ease; }
         body.theme-light { background: linear-gradient(135deg, #e0e7ff, #f3e8ff, #fce7f3); color: #1e293b; }
@@ -2560,6 +2674,23 @@
             showComfyWorkflow: false
         };
 
+        const detectMobileInterfaceMode = () => {
+            const pointerCoarse = !!window.matchMedia?.('(pointer: coarse)')?.matches;
+            const hoverNone = !!window.matchMedia?.('(hover: none)')?.matches;
+            const hasTouch = (navigator.maxTouchPoints || 0) > 0;
+            const shortEdge = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+            const touchNarrowViewport = hasTouch && shortEdge > 0 && shortEdge <= 900;
+            const mobileUa = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|Windows Phone/i.test(String(navigator.userAgent || ''));
+            return (pointerCoarse && hoverNone && hasTouch) || (touchNarrowViewport && mobileUa);
+        };
+
+        const applyAdaptiveInterfaceMode = () => {
+            const isMobileUi = detectMobileInterfaceMode();
+            document.body.classList.toggle('mobile-ui', isMobileUi);
+            document.body.classList.toggle('desktop-ui', !isMobileUi);
+            return isMobileUi;
+        };
+
         let hoverHideTimer = null;
         let generatorWindowPos = readGeneratorWindowPosition();
         let generatorDragState = {
@@ -2661,6 +2792,7 @@
 
         window.startGeneratorDrag = (event) => {
             if (window.innerWidth <= 768) return;
+            if (document.body.classList.contains('mobile-ui')) return;
             if (event.type === 'mousedown' && event.button !== 0) return;
             const container = document.getElementById('sidebar-area');
             if (!container || container.classList.contains('hidden')) return;
@@ -4553,7 +4685,7 @@
                             <h1 class="text-xl font-bold tracking-tight text-slate-800 dark:text-white">AI <span class="text-indigo-600 dark:text-indigo-400">画廊</span></h1>
                         </div>
                         <div class="flex items-center gap-4">
-                            <div class="relative hidden md:block group">
+                            <div class="desktop-search-shell relative hidden md:block group">
                                 <i data-lucide="search" class="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-indigo-500 transition-colors"></i>
                                 <input type="text" placeholder="搜索图像..." value="${safeSearchQuery}" oninput="handleSearch(this.value)" 
                                     class="pl-12 pr-4 py-3 bg-white/50 dark:bg-slate-800/50 border border-white/60 dark:border-slate-700 rounded-2xl text-base focus:outline-none focus:ring-2 focus:ring-indigo-400/50 w-72 transition-all text-slate-800 dark:text-slate-100 placeholder-slate-500" />
@@ -4589,6 +4721,13 @@
                             </button>
                         </div>
                     </header>
+                    <div class="mobile-search-shell px-3 pt-2">
+                        <div class="relative group">
+                            <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                            <input type="text" placeholder="搜索图像..." value="${safeSearchQuery}" oninput="handleSearch(this.value)"
+                                class="pl-9 pr-3 py-2.5 bg-white/70 dark:bg-slate-800/65 border border-white/60 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400/40 transition-all text-slate-800 dark:text-slate-100 placeholder-slate-500" />
+                        </div>
+                    </div>
                     <div class="app-layout">
                         <main class="golden-ratio-main p-6 custom-scrollbar relative">
                             <div id="filters-container" class="flex gap-3 mb-6 overflow-x-auto py-3 px-1 custom-scrollbar"></div>
@@ -4677,6 +4816,7 @@
         const renderArtistCards = () => {
             const container = document.getElementById('cards-container');
             if (!container) return;
+            const isMobileUi = document.body.classList.contains('mobile-ui');
             const layout = getCardLayoutClasses();
             container.className = `grid pb-24`;
             container.style.gridTemplateColumns = `repeat(${layout.cols}, minmax(0, 1fr))`;
@@ -4718,8 +4858,9 @@
                 const escapedImageUrl = escapeHtml(artist.imageUrl || '');
                 const notePlain = String(artist.note || '');
                 const escapedNote = escapeHtml(notePlain.length > 50 ? `${notePlain.slice(0, 50)}...` : notePlain);
+                const hoverDetailAttrs = isMobileUi ? '' : ` onmouseenter="showHoverDetail('${escapedId}', event)" onmouseleave="scheduleHideHoverDetail(event)"`;
                 return `
-                <div onclick="toggleSelection('${escapedId}')" onmouseenter="showHoverDetail('${escapedId}', event)" onmouseleave="scheduleHideHoverDetail(event)" data-artist-id="${escapedId}" class="group artist-card relative glass-card rounded-3xl overflow-hidden cursor-pointer hover:-translate-y-2 transition-all duration-300 bg-white/40 dark:bg-slate-800/40 ${isSel ? 'ring-4 ring-indigo-500 dark:ring-indigo-400 shadow-2xl scale-[1.02]' : 'hover:shadow-xl dark:border-white/5'}">
+                <div onclick="toggleSelection('${escapedId}')"${hoverDetailAttrs} data-artist-id="${escapedId}" class="group artist-card relative glass-card rounded-3xl overflow-hidden cursor-pointer hover:-translate-y-2 transition-all duration-300 bg-white/40 dark:bg-slate-800/40 ${isSel ? 'ring-4 ring-indigo-500 dark:ring-indigo-400 shadow-2xl scale-[1.02]' : 'hover:shadow-xl dark:border-white/5'}">
                     <div class="aspect-[${layout.aspect}] bg-slate-100 dark:bg-slate-700/50 relative overflow-hidden">
                         ${artist.imageUrl 
                             ? `<img src="${escapedImageUrl}" class="w-full h-full object-cover transition-all duration-500 group-hover:scale-110 ${artist.isNSFW && state.displayConfig?.blurNSFW !== false ? 'blur-xl group-hover:blur-none' : ''}" loading="lazy" />` 
@@ -4759,6 +4900,18 @@
         };
 
         const applySidebarFollowLayout = (container) => {
+            if (document.body.classList.contains('mobile-ui')) {
+                stopGeneratorDrag();
+                container.style.position = 'fixed';
+                container.style.left = '0.6rem';
+                container.style.right = '0.6rem';
+                container.style.width = 'auto';
+                container.style.top = 'auto';
+                container.style.bottom = '0.7rem';
+                container.style.height = 'min(54vh, 430px)';
+                container.style.zIndex = '45';
+                return;
+            }
             const metrics = getGeneratorWindowMetrics();
             container.style.position = 'fixed';
             container.style.right = 'auto';
@@ -4783,7 +4936,7 @@
 
         const clearSidebarFollowLayout = (container) => {
             stopGeneratorDrag();
-            ['position', 'left', 'top', 'right', 'width', 'height', 'z-index'].forEach((prop) => {
+            ['position', 'left', 'top', 'right', 'bottom', 'width', 'height', 'z-index'].forEach((prop) => {
                 container.style.removeProperty(prop);
             });
         };
@@ -5425,7 +5578,22 @@
             lucide.createIcons();
         };
 
+        const refreshAdaptiveInterfaceMode = () => {
+            const wasMobileUi = document.body.classList.contains('mobile-ui');
+            const isMobileUi = applyAdaptiveInterfaceMode();
+            if (wasMobileUi !== isMobileUi && !state.isDataLoading) {
+                renderSelectionArea();
+                renderModals();
+            }
+        };
+
+        window.addEventListener('resize', refreshAdaptiveInterfaceMode, { passive: true });
+        window.addEventListener('orientationchange', () => {
+            setTimeout(refreshAdaptiveInterfaceMode, 120);
+        });
+
         (async () => {
+            applyAdaptiveInterfaceMode();
             updateState({ isDataLoading: true });
             applyTheme();
             try {
