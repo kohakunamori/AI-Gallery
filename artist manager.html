@@ -3885,6 +3885,37 @@
             }
             return extras.length ? `${contextLabel}：${extras.join('，')}` : `${contextLabel}：无新增数据`;
         };
+        const normalizeErrorMessage = (error, fallback = '未知错误') => {
+            const raw = typeof error === 'string'
+                ? error
+                : String(error?.message || fallback || '').trim();
+            const msg = String(raw || '').trim() || fallback;
+            const lower = msg.toLowerCase();
+
+            if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+                return '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS';
+            }
+            if (msg.includes('网络请求超时') || lower.includes('timeout')) {
+                return '请求超时，请稍后重试';
+            }
+            if (msg.includes('网络请求失败') || msg.includes('网络错误')) {
+                return '网络连接失败，请检查网络后重试';
+            }
+            return msg;
+        };
+        const isUserCancelledError = (error) => {
+            const msg = normalizeErrorMessage(error, '');
+            return msg === '已取消导入' || msg === '已取消操作';
+        };
+        const toastFailure = (prefix, error, options = {}) => {
+            const { silentCancel = false, fallback = '未知错误' } = options || {};
+            if (silentCancel && isUserCancelledError(error)) {
+                showToast('已取消导入');
+                return;
+            }
+            const message = normalizeErrorMessage(error, fallback);
+            showToast(`${prefix}: ${message}`);
+        };
         const runResolvedImportMerge = async (resolved, contextLabel) => {
             ensureImportPayloadSafe(resolved);
             const mergeResult = await mergeImportResolvedPayload(resolved);
@@ -3960,7 +3991,7 @@
                 showToast('数据已导出');
             } catch (e) {
                 console.error("Export failed", e);
-                showToast('导出失败: ' + e.message);
+                toastFailure('导出失败', e);
             }
         };
         window.triggerImport = () => document.getElementById('import-file-input').click();
@@ -4645,7 +4676,7 @@
                 showToast('同步配置已导出');
             } catch (error) {
                 console.error('Export sync config failed', error);
-                showToast(`导出失败: ${error.message || '未知错误'}`);
+                toastFailure('导出失败', error);
             }
         };
         window.triggerSyncConfigImport = () => {
@@ -4669,7 +4700,7 @@
                     showToast('同步配置已导入');
                 } catch (error) {
                     console.error('Import sync config failed', error);
-                    showToast(`同步配置导入失败: ${error?.message || '未知错误'}`);
+                    toastFailure('同步配置导入失败', error);
                 } finally {
                     if (event?.target) event.target.value = '';
                 }
@@ -4719,9 +4750,9 @@
                 finishSyncProgress(`同步到 ${channel} 完成`);
             } catch (error) {
                 console.error('Sync upload failed', error);
-                const message = String(error?.message || '网络错误');
-                failSyncProgress(`同步失败: ${message.includes('Failed to fetch') ? '网络/CORS 问题' : message}`);
-                showToast(`同步失败: ${message.includes('Failed to fetch') ? '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS' : message}`);
+                const message = normalizeErrorMessage(error, '网络错误');
+                failSyncProgress(`同步失败: ${message}`);
+                showToast(`同步失败: ${message}`);
             }
         };
 
@@ -4760,9 +4791,9 @@
                 finishSyncProgress(`从 ${channel} 拉取完成`);
             } catch (error) {
                 console.error('Sync download failed', error);
-                const message = String(error?.message || '网络错误');
-                failSyncProgress(`拉取失败: ${message.includes('Failed to fetch') ? '网络/CORS 问题' : message}`);
-                showToast(`拉取失败: ${message.includes('Failed to fetch') ? '网络/CORS 被拦截，请检查存储桶 CORS 与 HTTPS' : message}`);
+                const message = normalizeErrorMessage(error, '网络错误');
+                failSyncProgress(`拉取失败: ${message}`);
+                showToast(`拉取失败: ${message}`);
             }
         };
 
@@ -4784,8 +4815,7 @@
                     }
                     await runResolvedImportMerge(resolved, '导入完成');
                 } catch (err) {
-                    const message = String(err?.message || '格式错误');
-                    showToast(`导入失败: ${message}`);
+                    toastFailure('导入失败', err, { silentCancel: true, fallback: '格式错误' });
                 }
             };
             reader.readAsText(file);
@@ -5445,34 +5475,69 @@
                     }
                 };
 
-                const response = await fetch(`${llmHost}/chat/completions`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${llmKey}`
-                    },
-                    body: JSON.stringify({
-                        model: llmModel,
-                        temperature: 0,
-                        messages: [
-                            { role: 'system', content: systemPrompt },
-                            {
-                                role: 'user',
-                                content: `Strictly analyze effective params from this ComfyUI workflow JSON and output ONLY one JSON object:\n${JSON.stringify(userPayload)}`
-                            }
-                        ],
-                        max_tokens: 1200
-                    })
-                });
+                const createWorkflowRequestMessages = (extraInstruction = '') => {
+                    const suffix = extraInstruction ? `\n\n${extraInstruction}` : '';
+                    return [
+                        { role: 'system', content: systemPrompt },
+                        {
+                            role: 'user',
+                            content: `Strictly analyze effective params from this ComfyUI workflow JSON and output ONLY one JSON object:\n${JSON.stringify(userPayload)}${suffix}`
+                        }
+                    ];
+                };
 
-                if (!response.ok) {
-                    const err = await response.json().catch(() => ({}));
-                    throw new Error(err.error?.message || response.statusText || 'LLM 请求失败');
+                const requestWorkflowInference = async (maxTokens, extraInstruction = '') => {
+                    const response = await fetch(`${llmHost}/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${llmKey}`
+                        },
+                        body: JSON.stringify({
+                            model: llmModel,
+                            temperature: 0,
+                            messages: createWorkflowRequestMessages(extraInstruction),
+                            max_tokens: maxTokens
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const err = await response.json().catch(() => ({}));
+                        throw new Error(err.error?.message || response.statusText || 'LLM 请求失败');
+                    }
+
+                    const data = await response.json();
+                    const choice = data?.choices?.[0] || {};
+                    const finishReason = String(choice?.finish_reason || '').toLowerCase();
+                    const contentRaw = choice?.message?.content;
+                    const llmText = typeof contentRaw === 'string'
+                        ? contentRaw.trim()
+                        : (Array.isArray(contentRaw)
+                            ? contentRaw.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('').trim()
+                            : '');
+                    return { llmText, finishReason };
+                };
+
+                let inference = await requestWorkflowInference(1400);
+                if (inference.finishReason === 'length' || !inference.llmText) {
+                    inference = await requestWorkflowInference(
+                        2800,
+                        'IMPORTANT: Previous answer was truncated. Re-generate the COMPLETE JSON object from scratch. Output only valid JSON.'
+                    );
                 }
 
-                const data = await response.json();
-                const llmText = String(data?.choices?.[0]?.message?.content || '').trim();
+                if (inference.finishReason === 'length') {
+                    throw new Error('LLM 返回被截断（finish_reason=length），请提高模型输出上限或更换更长上下文模型');
+                }
+
+                const llmText = String(inference.llmText || '').trim();
+                if (!llmText) {
+                    throw new Error('LLM 返回为空');
+                }
                 const parsed = parseWorkflowInferenceJson(llmText);
+                if (!parsed || typeof parsed !== 'object') {
+                    throw new Error('LLM 返回不是完整 JSON（可能被截断或格式不合法）');
+                }
                 const unwrapped = unwrapWorkflowInferencePayload(parsed);
                 const llmPatch = normalizeWorkflowFieldPatch(unwrapped || {});
                 const mergedPatch = { ...deterministic, ...llmPatch, generatorType: 'COMFY' };
@@ -5488,9 +5553,9 @@
                 const fallbackApplied = applyWorkflowAutofillPatch({ ...deterministic, generatorType: 'COMFY' });
                 if (fallbackApplied) {
                     renderModals();
-                    showToast(`LLM 推理失败，已应用基础提取：${String(error?.message || '未知错误')}`);
+                    showToast(`LLM 推理失败，已应用基础提取：${normalizeErrorMessage(error)}`);
                 } else {
-                    showToast(`LLM 推理失败：${String(error?.message || '未知错误')}`);
+                    showToast(`LLM 推理失败：${normalizeErrorMessage(error)}`);
                 }
             } finally {
                 if (btn) {
@@ -5565,7 +5630,7 @@
                 }
             } catch (error) {
                 console.error('AI Analysis Error:', error);
-                showToast(`分析失败: ${error.message}`);
+                toastFailure('分析失败', error);
             } finally {
                 btn.innerHTML = originalHTML;
                 btn.disabled = false;
