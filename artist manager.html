@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI画廊</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236366f1'/%3E%3Cstop offset='100%25' stop-color='%233b82f6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M14 45l12-14 8 8 10-12 6 18H14z' fill='white' fill-opacity='.92'/%3E%3Ccircle cx='23' cy='22' r='5' fill='white' fill-opacity='.95'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="./tailwind.generated.css">
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <script>
         if (window.tailwind) {
@@ -1021,6 +1021,8 @@
     <div id="preview-modal-container"></div>
     <div id="sync-modal-container"></div>
     <div id="hover-detail-container"></div>
+    <div id="note-viewer-container"></div>
+    <div id="lora-viewer-container"></div>
     <div id="tag-selector-container"></div>
     <div id="comfy-workflow-container"></div>
     <div id="node-tag-preset-container"></div>
@@ -2792,6 +2794,7 @@
             previewImage: null,
             showThemeMenu: false,
             viewingNote: null,
+            viewingLora: null,
             tagSelector: null, // { id, x, y } for tag copy selector
             hoverExpandCategory: '',
             formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' },
@@ -2880,6 +2883,98 @@
         const SYNC_BUTTON_HOLD_MS = 720;
 
         const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
+        const formatLoraWeightItem = (entry = '') => {
+            const raw = String(entry || '').trim();
+            if (!raw) return '';
+
+            const normalized = raw.replace(/\s+/g, ' ').trim();
+            const weightedMatch = normalized.match(/^(.*?)(?:\s*\(\s*M\s*:\s*([^,)]+)\s*,\s*C\s*:\s*([^,)]+)\s*\))$/i);
+            if (weightedMatch) {
+                const name = String(weightedMatch[1] || '').trim();
+                const modelWeight = String(weightedMatch[2] || '').trim();
+                const clipWeight = String(weightedMatch[3] || '').trim();
+                if (!name) return '';
+                return `${name} (M:${modelWeight || '1'}, C:${clipWeight || modelWeight || '1'})`;
+            }
+
+            const webUiLoraMatch = normalized.match(/^<\s*lora\s*:\s*([^:>]+)\s*:\s*([^>]+)>$/i);
+            if (webUiLoraMatch) {
+                const name = String(webUiLoraMatch[1] || '').trim();
+                const weight = String(webUiLoraMatch[2] || '').trim() || '1';
+                if (!name) return '';
+                return `${name} (M:${weight}, C:${weight})`;
+            }
+
+            const pairMatch = normalized.match(/^([^:|]+)\s*:\s*([\d.]+)$/);
+            if (pairMatch) {
+                const name = String(pairMatch[1] || '').trim();
+                const modelWeight = String(pairMatch[2] || '').trim() || '1';
+                if (!name) return '';
+                return `${name} (M:${modelWeight}, C:1)`;
+            }
+
+            return normalized;
+        };
+        const parseLoraWeightList = (value = '') => {
+            const raw = String(value || '').trim();
+            if (!raw) return [];
+
+            const candidates = [];
+
+            if (raw.startsWith('[') && raw.endsWith(']')) {
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) {
+                        parsed.forEach((item) => {
+                            const normalized = formatLoraWeightItem(item);
+                            if (normalized) candidates.push(normalized);
+                        });
+                    }
+                } catch (_) {
+                    // noop
+                }
+            }
+
+            const webUiMatches = raw.match(/<\s*lora\s*:[^>]+>/gi) || [];
+            webUiMatches.forEach((token) => {
+                const normalized = formatLoraWeightItem(token);
+                if (normalized) candidates.push(normalized);
+            });
+
+            const weightedMatches = raw.match(/[^|\n]+?\(\s*M\s*:[^,)]+\s*,\s*C\s*:[^,)]+\s*\)/gi) || [];
+            weightedMatches.forEach((token) => {
+                const normalized = formatLoraWeightItem(token);
+                if (normalized) candidates.push(normalized);
+            });
+
+            if (!candidates.length) {
+                raw
+                    .split(/[|｜\n;；]+/)
+                    .map((item) => formatLoraWeightItem(item))
+                    .filter(Boolean)
+                    .forEach((item) => {
+                        candidates.push(item);
+                    });
+            }
+
+            return Array.from(new Set(candidates));
+        };
+        const parseLoraDisplayItem = (item = '') => {
+            const normalized = String(item || '').trim();
+            if (!normalized) {
+                return { name: '', modelWeight: '1', clipWeight: '1' };
+            }
+            const weightedMatch = normalized.match(/^(.*?)\s*\(\s*M\s*:\s*([^,)]+)\s*,\s*C\s*:\s*([^,)]+)\s*\)$/i);
+            if (weightedMatch) {
+                return {
+                    name: String(weightedMatch[1] || '').trim(),
+                    modelWeight: String(weightedMatch[2] || '1').trim() || '1',
+                    clipWeight: String(weightedMatch[3] || '1').trim() || '1'
+                };
+            }
+            return { name: normalized, modelWeight: '1', clipWeight: '1' };
+        };
+
         const clearSyncProgressResetTimer = () => {
             if (syncProgressResetTimer) {
                 clearTimeout(syncProgressResetTimer);
@@ -3106,7 +3201,7 @@
                     if (newState.syncMethod !== undefined || newState.webdavConfig !== undefined || newState.s3Config !== undefined) {
                         if (state.isSyncModalOpen) renderModals();
                     }
-                    if (newState.previewImage !== undefined || newState.viewingNote !== undefined) renderModals();
+                    if (newState.previewImage !== undefined || newState.viewingNote !== undefined || newState.viewingLora !== undefined) renderModals();
                     if (newState.tagSelector !== undefined) renderModals();
                     if (newState.isNodeTagPresetOpen !== undefined || newState.nodeTagPresets !== undefined || newState.activeNodeTagPresetId !== undefined) renderModals();
                     if (newState.displayConfig) {
@@ -3523,7 +3618,7 @@
             return 'bg-sky-500/35 border-sky-300/40 text-sky-100';
         };
 
-        const hasArtistHoverDetails = (artist) => !!(artist && (resolveGeneratorChip(artist) || artist.aiModel || artist.steps || artist.sampler || artist.cfgScale || artist.seed || artist.tag || artist.styleTag || artist.characterTag || artist.clothingTag));
+        const hasArtistHoverDetails = (artist) => !!(artist && (resolveGeneratorChip(artist) || artist.aiModel || artist.steps || artist.sampler || artist.cfgScale || artist.seed || artist.tag || artist.styleTag || artist.characterTag || artist.clothingTag || String(artist.loraWeights || '').trim()));
 
         const renderHoverDetailContent = (artist) => {
             const safeTitle = (v) => escapeHtml(v).replace(/\n/g, ' ');
@@ -3531,6 +3626,8 @@
                 const value = String(v || '').trim();
                 return value ? escapeHtml(value) : '-';
             };
+            const loraList = parseLoraWeightList(artist?.loraWeights || '');
+            const loraJoined = loraList.join(' | ');
             const escapedArtistId = escapeHtml(artist?.id || '');
             const generatorChip = resolveGeneratorChip(artist);
             const generatorChipToneClass = getGeneratorChipToneClass(generatorChip);
@@ -3544,6 +3641,7 @@
                         <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Sampler</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.sampler)}">${safeText(artist.sampler)}</span></div>
                         <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">CFG</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.cfgScale)}">${safeText(artist.cfgScale)}</span></div>
                         <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">Seed</span><span class="truncate flex-1 min-w-0" title="${safeTitle(artist.seed)}">${safeText(artist.seed)}</span></div>
+                        <div class="flex items-start gap-2"><span class="text-white/60 shrink-0">LoRA</span><span class="flex-1 min-w-0 break-words" title="${safeTitle(loraJoined)}">${safeText(loraJoined)}</span></div>
                     </div>
                     <div class="h-px bg-white/15 my-2.5"></div>
                     <div class="text-[10px] uppercase tracking-wider text-white/70 mb-2 font-semibold">标签</div>
@@ -3710,13 +3808,83 @@
             const imageMap = await getAllImagesFromIDB({ forExport: true });
             const fullData = state.liveArtists.map(a => normalizeArtistRecord({ ...a, imageUrl: imageMap[a.id] || a.imageUrl || '' }));
             return {
+                app: 'ai-gallery',
                 version: EXPORT_VERSION,
                 exportedAt: new Date().toISOString(),
+                itemCount: fullData.length,
                 categories: normalizeCategoryList(state.categories),
                 artists: fullData,
                 settings: buildSettingsSnapshot(),
                 syncConfig: buildSyncConfigSnapshot()
             };
+        };
+
+        const MAX_IMPORT_ARTISTS = 12000;
+        const MAX_IMPORT_FILE_BYTES = 40 * 1024 * 1024;
+        const parseJsonOrThrow = (rawText, sourceLabel = 'JSON') => {
+            const text = String(rawText || '').trim();
+            if (!text) throw new Error(`${sourceLabel} 内容为空`);
+            const bytes = new Blob([text]).size;
+            if (bytes > MAX_IMPORT_FILE_BYTES) {
+                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 40 MB）`);
+            }
+            try {
+                return JSON.parse(text);
+            } catch (_) {
+                throw new Error(`${sourceLabel} 不是有效的 JSON`);
+            }
+        };
+        const ensureImportPayloadSafe = (resolved) => {
+            const artistsCount = Array.isArray(resolved?.artists) ? resolved.artists.length : 0;
+            if (artistsCount > MAX_IMPORT_ARTISTS) {
+                throw new Error(`导入条目过多（${artistsCount}），请拆分后再导入（上限 ${MAX_IMPORT_ARTISTS}）`);
+            }
+        };
+        const ensureImportFileSizeSafe = (file, sourceLabel = '导入文件') => {
+            const bytes = Number(file?.size || 0);
+            if (bytes > MAX_IMPORT_FILE_BYTES) {
+                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 40 MB）`);
+            }
+        };
+        const ensureImportMetadataSafe = (rawJson) => {
+            if (!rawJson || typeof rawJson !== 'object' || Array.isArray(rawJson)) return;
+            const versionValue = Number(rawJson.version || 0);
+            if (Number.isFinite(versionValue) && versionValue > EXPORT_VERSION) {
+                throw new Error(`导入数据版本 ${versionValue} 高于当前支持版本 ${EXPORT_VERSION}，请升级页面后再导入`);
+            }
+            if (rawJson.itemCount !== undefined && Array.isArray(rawJson.artists)) {
+                const expected = Number(rawJson.itemCount);
+                const actual = rawJson.artists.length;
+                if (Number.isFinite(expected) && expected >= 0 && expected !== actual) {
+                    throw new Error(`导入数据完整性校验失败：itemCount=${expected}，实际 artists=${actual}`);
+                }
+            }
+        };
+        const buildMergeSummary = (contextLabel, result) => {
+            const addedCount = Number(result?.addedCount || 0);
+            const skippedInvalid = Number(result?.skippedInvalid || 0);
+            const imagePersistFailed = Number(result?.imagePersistFailed || 0);
+            const settingsUpdated = !!result?.settingsUpdated;
+            const syncConfigUpdated = !!result?.syncConfigUpdated;
+            const extras = [
+                imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
+                settingsUpdated ? '设置已更新' : '',
+                syncConfigUpdated ? '同步配置已更新' : ''
+            ].filter(Boolean);
+
+            if (addedCount > 0) {
+                const base = skippedInvalid > 0
+                    ? `${contextLabel} ${addedCount} 条（跳过 ${skippedInvalid} 条）`
+                    : `${contextLabel} ${addedCount} 条`;
+                return extras.length ? `${base}，${extras.join('，')}` : base;
+            }
+            return extras.length ? `${contextLabel}：${extras.join('，')}` : `${contextLabel}：无新增数据`;
+        };
+        const runResolvedImportMerge = async (resolved, contextLabel) => {
+            ensureImportPayloadSafe(resolved);
+            const mergeResult = await mergeImportResolvedPayload(resolved);
+            showToast(buildMergeSummary(contextLabel, mergeResult));
+            return mergeResult;
         };
 
         window.handleExport = async () => {
@@ -4142,19 +4310,6 @@
             };
         };
 
-        const buildStorageHttpError = async (response, prefix) => {
-            const fallback = `${prefix} (HTTP ${response?.status || 'unknown'})`;
-            if (!response) return new Error(fallback);
-            let text = '';
-            try { text = await response.text(); } catch (_) {}
-            const parsed = parseS3ErrorXml(text);
-            const detail = parsed.code
-                ? `${parsed.code}${parsed.message ? `: ${parsed.message}` : ''}`
-                : (text ? text.replace(/\s+/g, ' ').slice(0, 180) : '');
-            const reqInfo = parsed.requestId ? ` (RequestId: ${parsed.requestId})` : '';
-            return new Error(`${fallback}${detail ? ` - ${detail}` : ''}${reqInfo}`);
-        };
-
         const buildStorageTextError = (prefix, status, rawText = '') => {
             const fallback = `${prefix} (HTTP ${status || 'unknown'})`;
             const text = String(rawText || '');
@@ -4181,12 +4336,15 @@
             return { loaded, total: hasTotal ? total : 0, hasTotal, percent };
         };
 
+        const XHR_TIMEOUT_MS = 45000;
+
         const executeXhrRequest = ({ method, url, headers = {}, body = null, onUploadProgress, onDownloadProgress }) => {
             return new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
                 xhr.open(method, url, true);
                 xhr.responseType = 'text';
                 xhr.withCredentials = false;
+                xhr.timeout = XHR_TIMEOUT_MS;
 
                 Object.entries(headers || {}).forEach(([key, value]) => {
                     if (value === undefined || value === null || value === '') return;
@@ -4263,7 +4421,7 @@
                 }
             });
             if (!response.ok) throw buildStorageTextError('WebDAV 拉取失败', response.status, response.responseText);
-            return JSON.parse(response.responseText || '{}');
+            return parseJsonOrThrow(response.responseText || '{}', 'WebDAV 响应');
         };
 
         const s3Upload = async (s3ConfigInput = state.s3Config, onProgress = null) => {
@@ -4334,11 +4492,11 @@
                             if (typeof onProgress === 'function') onProgress(progress);
                         }
                     });
-                    if (response.ok) return JSON.parse(response.responseText || '{}');
+                    if (response.ok) return parseJsonOrThrow(response.responseText || '{}', 'S3 响应');
                 }
                 throw buildStorageTextError('S3 拉取失败', response.status, response.responseText || '');
             }
-            return JSON.parse(response.responseText || '{}');
+            return parseJsonOrThrow(response.responseText || '{}', 'S3 响应');
         };
 
         window.closeSyncModal = () => {
@@ -4396,18 +4554,10 @@
         };
         const getEffectiveSyncDraft = () => {
             if (state.isSyncModalOpen) return readSyncDraftFromInputs();
-            return {
-                syncMethod: state.syncMethod === 's3' ? 's3' : 'webdav',
-                webdavConfig: normalizeWebdavConfig(state.webdavConfig || {}),
-                s3Config: normalizeS3Config(state.s3Config || {})
-            };
+            return buildSyncConfigSnapshot();
         };
         const isSyncDraftDirty = (draft) => {
-            const persisted = {
-                syncMethod: state.syncMethod === 's3' ? 's3' : 'webdav',
-                webdavConfig: normalizeWebdavConfig(state.webdavConfig || {}),
-                s3Config: normalizeS3Config(state.s3Config || {})
-            };
+            const persisted = buildSyncConfigSnapshot();
             return JSON.stringify(draft) !== JSON.stringify(persisted);
         };
         window.exportSyncSettings = () => {
@@ -4445,9 +4595,9 @@
             const reader = new FileReader();
             reader.onload = async (ev) => {
                 try {
+                    ensureImportFileSizeSafe(file, '同步配置文件');
                     const rawText = String(ev?.target?.result || '').trim();
-                    if (!rawText) throw new Error('Empty file');
-                    const parsed = JSON.parse(rawText);
+                    const parsed = parseJsonOrThrow(rawText, '同步配置文件');
                     const source = parsed && typeof parsed === 'object' && parsed.config && typeof parsed.config === 'object' ? parsed.config : parsed;
                     const syncMethod = String(source?.syncMethod || '').toLowerCase() === 's3' ? 's3' : 'webdav';
                     const webdavConfig = normalizeWebdavConfig(source?.webdavConfig || source?.webdav || {});
@@ -4456,7 +4606,7 @@
                     showToast('同步配置已导入');
                 } catch (error) {
                     console.error('Import sync config failed', error);
-                    showToast('同步配置导入失败: JSON 格式错误');
+                    showToast(`同步配置导入失败: ${error?.message || '未知错误'}`);
                 } finally {
                     if (event?.target) event.target.value = '';
                 }
@@ -4534,26 +4684,11 @@
                     ? await s3Download(draft.s3Config, downloadProgressHandler)
                     : await webdavDownload(draft.webdavConfig, downloadProgressHandler);
                 updateSyncProgress(55, '数据拉取成功，正在解析...');
+                ensureImportMetadataSafe(rawJson);
                 const resolved = resolveImportPayload(rawJson);
                 updateSyncProgress(74, '解析完成，正在合并本地数据...');
-                const { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
+                await runResolvedImportMerge(resolved, `从 ${channel} 同步`);
                 updateSyncProgress(95, '合并完成，正在收尾...');
-                if (addedCount > 0) {
-                    const baseMsg = skippedInvalid > 0 ? `从 ${channel} 同步 ${addedCount} 条（跳过 ${skippedInvalid} 条）` : `从 ${channel} 同步 ${addedCount} 条`;
-                    const extras = [
-                        imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
-                        settingsUpdated ? '设置已更新' : '',
-                        syncConfigUpdated ? '同步配置已更新' : ''
-                    ].filter(Boolean);
-                    showToast(extras.length ? `${baseMsg}，${extras.join('，')}` : baseMsg);
-                } else {
-                    const extras = [
-                        imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
-                        settingsUpdated ? '设置已更新' : '',
-                        syncConfigUpdated ? '同步配置已更新' : ''
-                    ].filter(Boolean);
-                    showToast(extras.length ? `${channel} 已同步：${extras.join('，')}` : `${channel} 无新增数据`);
-                }
                 finishSyncProgress(`从 ${channel} 拉取完成`);
             } catch (error) {
                 console.error('Sync download failed', error);
@@ -4569,27 +4704,12 @@
             const reader = new FileReader();
             reader.onload = async (ev) => {
                 try {
+                    ensureImportFileSizeSafe(file, '导入文件');
                     const rawText = String(ev?.target?.result || '').trim();
-                    if (!rawText) throw new Error('Empty file');
-                    const rawJson = JSON.parse(rawText);
+                    const rawJson = parseJsonOrThrow(rawText, '导入文件');
+                    ensureImportMetadataSafe(rawJson);
                     const resolved = resolveImportPayload(rawJson);
-                    const { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated } = await mergeImportResolvedPayload(resolved);
-                    if (addedCount > 0) {
-                        const baseMsg = skippedInvalid > 0 ? `成功导入 ${addedCount} 位画师（跳过 ${skippedInvalid} 条无效数据）` : `成功导入 ${addedCount} 位画师`;
-                        const extras = [
-                            imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
-                            settingsUpdated ? '设置已更新' : '',
-                            syncConfigUpdated ? '同步配置已更新' : ''
-                        ].filter(Boolean);
-                        showToast(extras.length ? `${baseMsg}，${extras.join('，')}` : baseMsg);
-                    } else {
-                        const extras = [
-                            imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
-                            settingsUpdated ? '设置已更新' : '',
-                            syncConfigUpdated ? '同步配置已更新' : ''
-                        ].filter(Boolean);
-                        showToast(extras.length ? `导入完成：${extras.join('，')}` : '未发现新数据 (重复或无效数据)');
-                    }
+                    await runResolvedImportMerge(resolved, '导入完成');
                 } catch (err) {
                     const message = String(err?.message || '格式错误');
                     showToast(`导入失败: ${message}`);
@@ -4814,14 +4934,23 @@
         window.viewLoraDetails = (id, e) => {
             e.stopPropagation();
             const artist = state.liveArtists.find((a) => a.id === id);
-            const loraText = String(artist?.loraWeights || '').trim();
-            if (!artist || !loraText) {
+            const loraList = parseLoraWeightList(artist?.loraWeights || '');
+            if (!artist || !loraList.length) {
                 showToast('暂无 LoRA 信息');
                 return;
             }
-            updateState({ viewingNote: { id: artist.id, name: `${artist.name} · LoRA`, note: loraText } });
+            updateState({
+                viewingNote: null,
+                viewingLora: {
+                    id: artist.id,
+                    name: `${artist.name} · LoRA`,
+                    note: loraList.join(' | '),
+                    loraItems: loraList
+                }
+            });
         };
         window.closeNoteViewer = () => updateState({ viewingNote: null });
+        window.closeLoraViewer = () => updateState({ viewingLora: null });
 
         // --- AI Configuration & Logic ---
         window.openAISettings = () => updateState({ isAISettingsOpen: true });
@@ -5553,7 +5682,8 @@
                 const escapedImageUrl = escapeHtml(artist.imageUrl || '');
                 const notePlain = String(artist.note || '');
                 const escapedNote = escapeHtml(notePlain.length > 50 ? `${notePlain.slice(0, 50)}...` : notePlain);
-                const loraPlain = String(artist.loraWeights || '').trim();
+                const loraList = parseLoraWeightList(artist.loraWeights || '');
+                const loraPlain = loraList.join(' | ');
                 const escapedLora = escapeHtml(loraPlain);
                 const escapedLoraSummary = escapeHtml(loraPlain.length > 42 ? `${loraPlain.slice(0, 42)}...` : loraPlain);
                 const hoverDetailAttrs = isMobileUi ? '' : ` onmouseenter="showHoverDetail('${escapedId}', event)" onmouseleave="scheduleHideHoverDetail(event)"`;
@@ -5702,6 +5832,8 @@
             const aiContainer = document.getElementById('ai-settings-container');
             const syncContainer = document.getElementById('sync-modal-container');
             const previewContainer = document.getElementById('preview-modal-container');
+            const noteViewerContainer = document.getElementById('note-viewer-container');
+            const loraViewerContainer = document.getElementById('lora-viewer-container');
             const nodeTagPresetContainer = document.getElementById('node-tag-preset-container');
 
             if (state.isSyncModalOpen) {
@@ -5845,7 +5977,10 @@
                                         <div class="sync-progress-fill" style="width: ${syncProgressPercent}%;"></div>
                                     </div>
                                 </div>` : ''}
-                                <p class="text-xs text-slate-500 dark:text-slate-400">提示：浏览器直连远程存储都需要服务端允许 CORS。建议使用应用专用密钥而非主账号密码。</p>
+                                <div class="rounded-xl bg-indigo-50/80 dark:bg-indigo-900/25 border border-indigo-100 dark:border-indigo-800/50 px-3 py-2.5 text-[11px] text-indigo-700 dark:text-indigo-200 leading-relaxed">
+                                    <p class="font-semibold mb-1">同步范围说明</p>
+                                    <p>上传/拉取会处理：画师数据、设置、节点预设、同步配置与背景图资产。浏览器直连远程存储需服务端允许 CORS，建议使用应用专用密钥。</p>
+                                </div>
                             </div>
 
                             <div class="mt-4 flex gap-3 md:gap-4 flex-shrink-0 pt-4 border-t border-slate-200 dark:border-slate-700">
@@ -5857,6 +5992,53 @@
                 lucide.createIcons(syncContainer);
             } else {
                 syncContainer.innerHTML = '';
+            }
+
+            if (noteViewerContainer && state.viewingNote) {
+                const noteTitle = escapeHtml(state.viewingNote.name || '详情');
+                const rawText = String(state.viewingNote.note || '');
+                const safeText = escapeHtml(rawText);
+                noteViewerContainer.innerHTML = `
+                    <div class="fixed inset-0 z-[130] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" style="z-index: 2147483600;" onclick="closeNoteViewer()">
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[1.5rem] shadow-2xl p-5 relative z-10 w-full max-w-2xl border dark:border-slate-700 max-h-[85vh] overflow-hidden flex flex-col" onclick="event.stopPropagation()">
+                            <button onclick="closeNoteViewer()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            <h2 class="text-lg md:text-xl font-bold text-slate-800 dark:text-white mb-4 pr-10">${noteTitle}</h2>
+                            <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar rounded-xl bg-slate-50/85 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 px-4 py-3 text-sm text-slate-700 dark:text-slate-200 whitespace-pre-wrap break-words">${safeText}</div>
+                        </div>
+                    </div>`;
+                lucide.createIcons(noteViewerContainer);
+            } else if (noteViewerContainer) {
+                noteViewerContainer.innerHTML = '';
+            }
+
+            if (loraViewerContainer && state.viewingLora) {
+                const loraTitle = escapeHtml(state.viewingLora.name || 'LoRA 详情');
+                const loraItems = Array.isArray(state.viewingLora.loraItems) ? state.viewingLora.loraItems : [];
+                loraViewerContainer.innerHTML = `
+                    <div class="fixed inset-0 z-[140] bg-black/60 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" style="z-index: 2147483640;" onclick="closeLoraViewer()">
+                        <div class="glass-modal dark:bg-slate-900/95 rounded-[1.5rem] shadow-2xl p-0 relative z-10 w-full max-w-3xl border border-fuchsia-200/70 dark:border-fuchsia-800/50 max-h-[85vh] overflow-hidden flex flex-col" onclick="event.stopPropagation()">
+                            <button onclick="closeLoraViewer()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            <div class="px-6 py-5 border-b border-fuchsia-200/70 dark:border-fuchsia-800/40 bg-gradient-to-r from-fuchsia-50/90 via-purple-50/70 to-white/80 dark:from-fuchsia-950/40 dark:via-purple-950/30 dark:to-slate-900/50">
+                                <h2 class="text-lg md:text-xl font-bold text-slate-800 dark:text-white pr-10">${loraTitle}</h2>
+                                <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                    <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300 border border-fuchsia-200 dark:border-fuchsia-700/50"><i data-lucide="list-tree" class="w-3.5 h-3.5"></i>LoRA 列表</span>
+                                    <span class="inline-flex items-center px-2 py-1 rounded-full bg-white/70 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">共 ${loraItems.length} 项</span>
+                                </div>
+                            </div>
+                            <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-5 space-y-2.5 bg-slate-50/70 dark:bg-slate-900/30">
+                                ${loraItems.map((item, index) => {
+                                    const parsed = parseLoraDisplayItem(item);
+                                    const safeName = escapeHtml(parsed.name || String(item || '').trim());
+                                    const safeModelWeight = escapeHtml(parsed.modelWeight);
+                                    const safeClipWeight = escapeHtml(parsed.clipWeight);
+                                    return `<div class="rounded-xl bg-white/90 dark:bg-slate-800/75 border border-slate-200 dark:border-slate-700 px-3.5 py-3 text-sm text-slate-700 dark:text-slate-200 shadow-sm"><div class="flex items-start gap-3"><span class="inline-flex items-center justify-center text-[11px] font-bold text-fuchsia-700 dark:text-fuchsia-300 bg-fuchsia-100 dark:bg-fuchsia-900/40 border border-fuchsia-200 dark:border-fuchsia-700/50 rounded-md px-1.5 py-0.5 mt-0.5">#${index + 1}</span><div class="min-w-0 flex-1"><div class="text-sm font-medium text-slate-800 dark:text-slate-100 break-all">${safeName}</div></div><div class="flex items-center gap-1.5 shrink-0"><span class="inline-flex items-center gap-1 rounded-full border border-indigo-200 dark:border-indigo-700/60 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap">模型权重 ${safeModelWeight}</span><span class="inline-flex items-center gap-1 rounded-full border border-cyan-200 dark:border-cyan-700/60 bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap">CLIP权重 ${safeClipWeight}</span></div></div></div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+                    </div>`;
+                lucide.createIcons(loraViewerContainer);
+            } else if (loraViewerContainer) {
+                loraViewerContainer.innerHTML = '';
             }
 
             // Render AI Settings Modal
@@ -6160,20 +6342,6 @@
                     <div class="fixed inset-0 z-[80] bg-black/95 backdrop-blur-xl flex items-center justify-center p-6 animate-fade-in" onclick="closePreview()">
                         <button onclick="closePreview()" class="absolute top-6 right-6 p-3 bg-white/10 hover:bg-white/20 text-white rounded-full transition-all z-50"><i data-lucide="x" class="w-8 h-8"></i></button>
                         <div class="relative max-w-5xl max-h-full w-full flex items-center justify-center" onclick="event.stopPropagation()"><img src="${safePreviewImage}" class="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl" /></div>
-                    </div>`;
-            } else if (state.viewingNote) {
-                const safeViewingName = escapeHtml(state.viewingNote.name || '');
-                const safeViewingNote = escapeHtml(state.viewingNote.note || '暂无备注');
-                previewContainer.innerHTML = `
-                    <div class="fixed inset-0 z-[90] bg-black/60 backdrop-blur-md flex items-center justify-center p-6 animate-fade-in" onclick="closeNoteViewer()">
-                        <div class="glass-modal dark:bg-slate-900/95 rounded-[2rem] shadow-2xl p-8 relative z-10 w-full max-w-lg border dark:border-slate-700" onclick="event.stopPropagation()">
-                            <button onclick="closeNoteViewer()" class="absolute top-6 right-6 p-2 bg-slate-100 dark:bg-slate-800 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors"><i data-lucide="x" class="w-6 h-6"></i></button>
-                            <h2 class="text-2xl font-bold text-slate-800 dark:text-white mb-2 flex items-center gap-3 pr-10"><i data-lucide="file-text" class="w-6 h-6 text-amber-500"></i>${safeViewingName}</h2>
-                            <p class="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-6">备注信息</p>
-                            <div class="bg-slate-50 dark:bg-slate-800/50 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 max-h-[60vh] overflow-y-auto custom-scrollbar">
-                                <p class="text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed text-sm">${safeViewingNote}</p>
-                            </div>
-                        </div>
                     </div>`;
             } else {
                 previewContainer.innerHTML = '';
