@@ -1709,6 +1709,40 @@
                 const match = text.match(regex);
                 return match ? String(match[1]).trim() : '';
             };
+            const normalizeLoraWeight = (value, fallback = '1') => {
+                const raw = String(value ?? '').trim();
+                if (!raw) return fallback;
+                const num = Number(raw);
+                if (!Number.isFinite(num)) return raw;
+                return String(num).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+            };
+            const normalizeLoraName = (value) => String(value || '').trim().replace(/^<|>$/g, '');
+            const stringifyLoraEntry = (entry) => {
+                const name = normalizeLoraName(entry?.name || '');
+                if (!name) return '';
+                const model = normalizeLoraWeight(entry?.model ?? '1');
+                const clip = normalizeLoraWeight(entry?.clip ?? model);
+                return `${name} (M:${model}, C:${clip})`;
+            };
+            const loraEntries = [];
+            const loraInlineRegex = /<\s*lora\s*:\s*([^:>]+)\s*:\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))(?:\s*:\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+)))?\s*>/ig;
+            for (;;) {
+                const loraInlineMatch = loraInlineRegex.exec(text);
+                if (!loraInlineMatch) break;
+                const modelW = normalizeLoraWeight(loraInlineMatch[2], '1');
+                const clipW = normalizeLoraWeight(loraInlineMatch[3], modelW);
+                loraEntries.push({ name: loraInlineMatch[1], model: modelW, clip: clipW });
+            }
+            for (let index = 1; index <= 12; index += 1) {
+                const moduleMatch = text.match(new RegExp(`(?:^|[,\n])\\s*AddNet\\s+Module\\s+${index}\\s*:\\s*([^,\\n]+)`, 'i'));
+                if (!moduleMatch) continue;
+                const modelMatch = text.match(new RegExp(`(?:^|[,\n])\\s*AddNet\\s+Weight\\s+A\\s+${index}\\s*:\\s*([^,\\n]+)`, 'i'));
+                const clipMatch = text.match(new RegExp(`(?:^|[,\n])\\s*AddNet\\s+Weight\\s+B\\s+${index}\\s*:\\s*([^,\\n]+)`, 'i'));
+                const modelW = normalizeLoraWeight(modelMatch?.[1], '1');
+                const clipW = normalizeLoraWeight(clipMatch?.[1], modelW);
+                loraEntries.push({ name: moduleMatch[1], model: modelW, clip: clipW });
+            }
+            const loraWeights = Array.from(new Set(loraEntries.map(stringifyLoraEntry).filter(Boolean))).join(' | ');
             return {
                 steps: pick(/(?:^|[,\n])\s*Steps\s*:\s*([^,\n]+)/i),
                 sampler: pick(/(?:^|[,\n])\s*Sampler\s*:\s*([^,\n]+)/i),
@@ -1716,6 +1750,7 @@
                 seed: pick(/(?:^|[,\n])\s*Seed\s*:\s*([^,\n]+)/i),
                 aiModel: pick(/(?:^|[,\n])\s*Model\s*:\s*([^,\n]+)/i),
                 modelHash: pick(/(?:^|[,\n])\s*Model\s*hash\s*:\s*([^,\n]+)/i),
+                loraWeights,
             };
         };
 
@@ -1829,9 +1864,9 @@
         };
 
         const getComfyPromptFields = (promptText = '') => {
-            const parsed = parseJSONLoose(promptText);
+            const parsed = (promptText && typeof promptText === 'object') ? promptText : parseJSONLoose(promptText);
             const graph = normalizeComfyGraph(parsed);
-            const textFallback = String(promptText || '');
+            const textFallback = typeof promptText === 'string' ? promptText : JSON.stringify(promptText || '');
 
             const normalizeSeedLike = (seedRaw) => {
                 const s = String(seedRaw || '').trim();
@@ -1873,7 +1908,53 @@
 
             if (!graph || typeof graph !== 'object') return regexFallback();
             const entries = Object.entries(graph);
-            const nodes = entries.map(([, node]) => node).filter(Boolean);
+            const nodeRefMap = new Map(entries.map(([id, node]) => [String(id), node]));
+            const referencedNodeIds = new Set();
+            const collectRefs = (value) => {
+                if (!Array.isArray(value)) {
+                    if (value && typeof value === 'object') Object.values(value).forEach(collectRefs);
+                    return;
+                }
+                if (value.length >= 2 && (typeof value[0] === 'string' || typeof value[0] === 'number')) {
+                    referencedNodeIds.add(String(value[0]));
+                }
+                value.forEach(collectRefs);
+            };
+            entries.forEach(([, node]) => {
+                collectRefs(node?.inputs);
+            });
+            const sinkNodeIds = entries
+                .filter(([id, node]) => {
+                    const classType = String(node?.class_type || '').toLowerCase();
+                    const isLikelySink = /saveimage|previewimage|imagesave|save\s*image|vaedecode|image\s*output/.test(classType);
+                    return isLikelySink || !referencedNodeIds.has(String(id));
+                })
+                .map(([id]) => String(id));
+            const activeNodeIds = (() => {
+                if (!sinkNodeIds.length) return new Set(nodeRefMap.keys());
+                const active = new Set();
+                const stack = [...sinkNodeIds];
+                while (stack.length) {
+                    const nodeId = String(stack.pop());
+                    if (active.has(nodeId)) continue;
+                    active.add(nodeId);
+                    const node = nodeRefMap.get(nodeId);
+                    if (!node?.inputs || typeof node.inputs !== 'object') continue;
+                    Object.values(node.inputs).forEach((value) => {
+                        const walk = (v) => {
+                            if (Array.isArray(v)) {
+                                if (v.length >= 2 && (typeof v[0] === 'string' || typeof v[0] === 'number')) stack.push(String(v[0]));
+                                v.forEach(walk);
+                                return;
+                            }
+                            if (v && typeof v === 'object') Object.values(v).forEach(walk);
+                        };
+                        walk(value);
+                    });
+                }
+                return active;
+            })();
+            const nodes = entries.filter(([id]) => activeNodeIds.has(String(id))).map(([, node]) => node).filter(Boolean);
             const getNodeById = (id) => graph?.[String(id)] || null;
             const normalizeValue = (value, fieldName = '') => {
                 if (Array.isArray(value)) {
@@ -1915,6 +1996,18 @@
                 aiModel: firstFromNodes(/checkpoint|loader/, ['ckpt_name', 'base_ckpt_name', 'unet_name']),
                 modelHash: firstFromNodes(/checkpoint|loader/, ['model_hash', 'ckpt_hash', 'hash']),
             };
+            const loraEntries = [];
+            nodes.forEach((node) => {
+                const classType = String(node?.class_type || '').toLowerCase();
+                if (!/lora/.test(classType)) return;
+                const inputs = node?.inputs || {};
+                const loraName = normalizeValue(inputs.lora_name || inputs.name || inputs.model || inputs.lora || '');
+                if (!String(loraName || '').trim()) return;
+                const modelW = normalizeValue(inputs.strength_model ?? inputs.model_strength ?? inputs.weight ?? 1);
+                const clipW = normalizeValue(inputs.strength_clip ?? inputs.clip_strength ?? inputs.weight_clip ?? modelW || 1);
+                loraEntries.push(`${String(loraName).trim()} (M:${String(modelW || '1').trim()}, C:${String(clipW || modelW || '1').trim()})`);
+            });
+            const loraWeights = Array.from(new Set(loraEntries.filter(Boolean))).join(' | ');
             const fallback = regexFallback();
             return {
                 steps: fromGraph.steps || fallback.steps,
@@ -1923,6 +2016,7 @@
                 seed: fromGraph.seed || fallback.seed,
                 aiModel: fromGraph.aiModel || fallback.aiModel,
                 modelHash: fromGraph.modelHash || fallback.modelHash,
+                loraWeights,
             };
         };
 
@@ -2337,10 +2431,10 @@
         // 3. State & Business Logic
         // =========================================
         const INITIAL_DATA = [
-            { id: '1', name: 'Mika Pikazo', tag: 'mika pikazo', imageUrl: 'https://placehold.co/600x400/818CF8/FFFFFF?text=Mika', isFavorite: true, createdAt: 1700000000000, danbooruCount: 1500, isNSFW: false, note: '', aiModel: 'Stable Diffusion', styleTag: '日系薄涂', characterTag: 'mika pikazo', clothingTag: '学生制服', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
-            { id: '2', name: 'Wlop', tag: 'wlop', imageUrl: 'https://placehold.co/600x400/6366F1/FFFFFF?text=Wlop', isFavorite: false, createdAt: 1700000000001, danbooruCount: 800, isNSFW: false, note: '', aiModel: 'Midjourney', styleTag: '插画风格', characterTag: 'wlop', clothingTag: '披风', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
-            { id: '3', name: 'Kantoku', tag: 'kantoku', imageUrl: 'https://placehold.co/600x400/EC4899/FFFFFF?text=Kantoku', isFavorite: true, createdAt: 1700000000002, danbooruCount: 4200, isNSFW: false, note: '', aiModel: 'NovelAI', styleTag: '赛璐璐', characterTag: 'kantoku', clothingTag: '女仆装', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
-            { id: '4', name: 'Carmine', tag: 'carmine', imageUrl: '', isFavorite: false, createdAt: 1700000000003, danbooruCount: 200, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' }
+            { id: '1', name: 'Mika Pikazo', tag: 'mika pikazo', imageUrl: 'https://placehold.co/600x400/818CF8/FFFFFF?text=Mika', isFavorite: true, createdAt: 1700000000000, danbooruCount: 1500, isNSFW: false, note: '', aiModel: 'Stable Diffusion', styleTag: '日系薄涂', characterTag: 'mika pikazo', clothingTag: '学生制服', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' },
+            { id: '2', name: 'Wlop', tag: 'wlop', imageUrl: 'https://placehold.co/600x400/6366F1/FFFFFF?text=Wlop', isFavorite: false, createdAt: 1700000000001, danbooruCount: 800, isNSFW: false, note: '', aiModel: 'Midjourney', styleTag: '插画风格', characterTag: 'wlop', clothingTag: '披风', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' },
+            { id: '3', name: 'Kantoku', tag: 'kantoku', imageUrl: 'https://placehold.co/600x400/EC4899/FFFFFF?text=Kantoku', isFavorite: true, createdAt: 1700000000002, danbooruCount: 4200, isNSFW: false, note: '', aiModel: 'NovelAI', styleTag: '赛璐璐', characterTag: 'kantoku', clothingTag: '女仆装', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' },
+            { id: '4', name: 'Carmine', tag: 'carmine', imageUrl: '', isFavorite: false, createdAt: 1700000000003, danbooruCount: 200, isNSFW: false, note: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' }
         ];
 
         const getDefaultDisplayConfig = () => ({ showCardInfo: false, blurNSFW: true, layoutPreset: 'balanced', gridCols: 4, tileSize: 'md', customCols: 4, customGap: 24, customAspect: '3/4', styleMode: 'default', backgroundImage: '' });
@@ -2493,7 +2587,7 @@
             return ['SD', 'COMFY', 'NAI'].includes(v) ? v : '';
         };
 
-        const NODE_PRESET_TARGET_FIELDS = ['tag', 'styleTag', 'characterTag', 'clothingTag', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler'];
+        const NODE_PRESET_TARGET_FIELDS = ['tag', 'styleTag', 'characterTag', 'clothingTag', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler', 'loraWeights'];
 
         const getDefaultNodeTagPresets = () => ([
             {
@@ -2632,6 +2726,7 @@
                 steps: artist.steps || '',
                 sampler: artist.sampler || '',
                 modelHash: artist.modelHash || '',
+                loraWeights: artist.loraWeights || '',
                 createdAt
             };
         };
@@ -2668,7 +2763,7 @@
             viewingNote: null,
             tagSelector: null, // { id, x, y } for tag copy selector
             hoverExpandCategory: '',
-            formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' },
+            formData: { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' },
             theme: localStorage.getItem(THEME_KEY) || 'light',
             aiConfig: (() => {
                 try {
@@ -3775,6 +3870,7 @@
                     steps: item.steps || '',
                     sampler: item.sampler || '',
                     modelHash: item.modelHash || '',
+                    loraWeights: item.loraWeights || '',
                     createdAt: item.createdAt || Date.now()
                 });
 
@@ -4440,7 +4536,7 @@
 
         // --- Modal Logic ---
         window.openAddModal = () => {
-            state.formData = { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '' };
+            state.formData = { name: '', tag: '', imageUrl: '', category: '', danbooruCount: 0, isNSFW: false, note: '', generatorType: '', aiModel: '', styleTag: '', characterTag: '', clothingTag: '', cfgScale: '', seed: '', steps: '', sampler: '', modelHash: '', loraWeights: '' };
             state.comfyWorkflowData = null;
             state.showComfyWorkflow = false;
             state.isNodeTagPresetOpen = false;
@@ -4546,7 +4642,7 @@
             updateModalExtractButtonDOM();
         };
         window.handleSaveArtist = async () => {
-            const { name, tag, imageUrl, category, danbooruCount, isNSFW, note, generatorType, aiModel, styleTag, characterTag, clothingTag, cfgScale, seed, steps, sampler, modelHash } = state.formData;
+            const { name, tag, imageUrl, category, danbooruCount, isNSFW, note, generatorType, aiModel, styleTag, characterTag, clothingTag, cfgScale, seed, steps, sampler, modelHash, loraWeights } = state.formData;
             if (!tag || !tag.trim()) return;
             const isEdit = !!state.editingArtist;
             const id = isEdit ? state.editingArtist.id : Date.now().toString();
@@ -4581,6 +4677,7 @@
                 steps: steps || '',
                 sampler: sampler || '',
                 modelHash: modelHash || '',
+                loraWeights: loraWeights || '',
                 comfyWorkflowData: state.comfyWorkflowData || null,
                 isFavorite: isEdit ? state.editingArtist.isFavorite : false,
                 createdAt: isEdit ? state.editingArtist.createdAt : Date.now(),
@@ -4826,6 +4923,206 @@
                 .trim();
             if (!text) return '';
             return text.slice(0, 10).trim();
+        };
+
+        const buildActiveComfyGraph = (graphInput = {}) => {
+            const graph = normalizeComfyGraph(graphInput || {});
+            if (!graph || typeof graph !== 'object') return {};
+            const entries = Object.entries(graph);
+            if (!entries.length) return {};
+
+            const collectReferenced = (value, bucket) => {
+                if (Array.isArray(value)) {
+                    if (value.length >= 2 && (typeof value[0] === 'string' || typeof value[0] === 'number')) {
+                        bucket.add(String(value[0]));
+                    }
+                    value.forEach((item) => {
+                        collectReferenced(item, bucket);
+                    });
+                    return;
+                }
+                if (value && typeof value === 'object') {
+                    Object.values(value).forEach((item) => {
+                        collectReferenced(item, bucket);
+                    });
+                }
+            };
+
+            const referencedIds = new Set();
+            entries.forEach(([, node]) => {
+                collectReferenced(node?.inputs, referencedIds);
+            });
+
+            const sinkIds = entries
+                .filter(([id, node]) => {
+                    const classType = String(node?.class_type || '').toLowerCase();
+                    const likelyOutput = /saveimage|previewimage|imagesave|save\s*image|vaedecode|image\s*output/.test(classType);
+                    return likelyOutput || !referencedIds.has(String(id));
+                })
+                .map(([id]) => String(id));
+
+            const activeIds = new Set();
+            const stack = sinkIds.length ? [...sinkIds] : entries.map(([id]) => String(id));
+            while (stack.length) {
+                const nodeId = String(stack.pop());
+                if (activeIds.has(nodeId)) continue;
+                activeIds.add(nodeId);
+                const node = graph[nodeId];
+                if (!node?.inputs || typeof node.inputs !== 'object') continue;
+                Object.values(node.inputs).forEach((value) => {
+                    const refs = new Set();
+                    collectReferenced(value, refs);
+                    refs.forEach((refId) => {
+                        if (!activeIds.has(refId)) stack.push(refId);
+                    });
+                });
+            }
+
+            return entries
+                .filter(([id]) => activeIds.has(String(id)))
+                .reduce((acc, [id, node]) => {
+                    acc[id] = node;
+                    return acc;
+                }, {});
+        };
+
+        const parseWorkflowInferenceJson = (rawText = '') => {
+            const direct = parseJSONLoose(rawText);
+            if (direct && typeof direct === 'object') return direct;
+            const text = String(rawText || '');
+            const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+            if (fenced) {
+                const parsedFenced = parseJSONLoose(fenced[1]);
+                if (parsedFenced && typeof parsedFenced === 'object') return parsedFenced;
+            }
+            const braces = text.match(/\{[\s\S]*\}/);
+            if (braces) {
+                const parsedBraces = parseJSONLoose(braces[0]);
+                if (parsedBraces && typeof parsedBraces === 'object') return parsedBraces;
+            }
+            return null;
+        };
+
+        const normalizeWorkflowFieldPatch = (patch = {}) => {
+            const out = {};
+            const pick = (key) => String(patch?.[key] || '').trim();
+            const assignIfValue = (key, value) => {
+                const normalized = String(value || '').trim();
+                if (normalized) out[key] = normalized;
+            };
+
+            assignIfValue('aiModel', pick('aiModel'));
+            assignIfValue('cfgScale', pick('cfgScale'));
+            assignIfValue('seed', pick('seed'));
+            assignIfValue('steps', pick('steps'));
+            assignIfValue('sampler', pick('sampler'));
+            assignIfValue('modelHash', pick('modelHash'));
+            assignIfValue('styleTag', pick('styleTag'));
+            assignIfValue('characterTag', pick('characterTag'));
+            assignIfValue('clothingTag', pick('clothingTag'));
+
+            const loraRaw = patch?.loraWeights;
+            if (Array.isArray(loraRaw)) {
+                const items = loraRaw.map((item) => String(item || '').trim()).filter(Boolean);
+                if (items.length) out.loraWeights = Array.from(new Set(items)).join(' | ');
+            } else {
+                assignIfValue('loraWeights', String(loraRaw || '').trim());
+            }
+
+            const generatorType = normalizeGeneratorType(pick('generatorType') || 'COMFY');
+            if (generatorType) out.generatorType = generatorType;
+            return out;
+        };
+
+        const applyWorkflowAutofillPatch = (patch = {}) => {
+            const normalized = normalizeWorkflowFieldPatch(patch);
+            if (!Object.keys(normalized).length) return false;
+            state.formData = { ...state.formData, ...normalized };
+            return true;
+        };
+
+        window.extractWorkflowParamsWithLLM = async () => {
+            const workflow = state.comfyWorkflowData;
+            const config = state.aiConfig || {};
+            if (!workflow || typeof workflow !== 'object') {
+                showToast('当前没有可分析的 ComfyUI 工作流');
+                return;
+            }
+            if (!config.apiKey) {
+                showToast('请先配置 AI Key');
+                window.openAISettings();
+                return;
+            }
+
+            const activeGraph = buildActiveComfyGraph(workflow);
+            const deterministic = normalizeWorkflowFieldPatch({ ...getComfyPromptFields(activeGraph), generatorType: 'COMFY' });
+
+            const btn = document.getElementById('workflow-llm-btn');
+            const originalHTML = btn?.innerHTML || '';
+            if (btn) {
+                btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>推理中...</span>`;
+                btn.disabled = true;
+            }
+
+            try {
+                const systemPrompt = 'You are a strict ComfyUI workflow analyzer. Use ONLY active nodes from the provided active_graph and infer actual generation parameters that are truly used. Ignore disconnected or inactive nodes. Return compact JSON only.';
+                const userPayload = {
+                    task: 'infer_effective_generation_params',
+                    active_graph: activeGraph,
+                    deterministic_hint: deterministic,
+                    required_keys: ['generatorType', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler', 'modelHash', 'loraWeights', 'styleTag', 'characterTag', 'clothingTag']
+                };
+
+                const response = await fetch(`${config.apiHost}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${config.apiKey}`
+                    },
+                    body: JSON.stringify({
+                        model: config.model,
+                        temperature: 0,
+                        messages: [
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: `Analyze this workflow JSON:\n${JSON.stringify(userPayload)}` }
+                        ],
+                        max_tokens: 700
+                    })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    throw new Error(err.error?.message || response.statusText || 'LLM 请求失败');
+                }
+
+                const data = await response.json();
+                const llmText = String(data?.choices?.[0]?.message?.content || '').trim();
+                const parsed = parseWorkflowInferenceJson(llmText);
+                const llmPatch = normalizeWorkflowFieldPatch(parsed || {});
+                const mergedPatch = { ...deterministic, ...llmPatch, generatorType: 'COMFY' };
+                const updated = applyWorkflowAutofillPatch(mergedPatch);
+                if (!updated) {
+                    showToast('LLM 未提取到可用参数');
+                    return;
+                }
+                renderModals();
+                showToast('已按工作流实际生效链路自动填充参数');
+            } catch (error) {
+                console.error('Workflow LLM inference error:', error);
+                const fallbackApplied = applyWorkflowAutofillPatch({ ...deterministic, generatorType: 'COMFY' });
+                if (fallbackApplied) {
+                    renderModals();
+                    showToast(`LLM 推理失败，已应用基础提取：${String(error?.message || '未知错误')}`);
+                } else {
+                    showToast(`LLM 推理失败：${String(error?.message || '未知错误')}`);
+                }
+            } finally {
+                if (btn) {
+                    btn.innerHTML = originalHTML;
+                    btn.disabled = false;
+                    lucide.createIcons(btn);
+                }
+            }
         };
 
         window.analyzeArtistStyle = async () => {
@@ -5535,6 +5832,7 @@
                 const safeFormSeed = escapeHtml(formData.seed || '');
                 const safeFormSteps = escapeHtml(formData.steps || '');
                 const safeFormSampler = escapeHtml(formData.sampler || '');
+                const safeFormLoraWeights = escapeHtml(formData.loraWeights || '');
                 container.innerHTML = `
                     <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; z-index: 50; padding: 1rem;" class="animate-fade-in">
                         <div class="absolute inset-0 bg-slate-900/30 dark:bg-black/60 backdrop-blur-md" onclick="handleCloseModal()"></div>
@@ -5584,6 +5882,12 @@
                                         <div>
                                             <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">备注</label>
                                             <textarea value="${safeFormNote}" oninput="handleModalFormInput('note', this.value)" rows="2" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm resize-none" placeholder="添加关于此图像的备注信息...">${safeFormNote}</textarea>
+                                        </div>
+                                        <div class="pt-1">
+                                            <button id="workflow-llm-btn" type="button" onclick="extractWorkflowParamsWithLLM()" class="btn-icon liquid-action-tint w-full py-2.5 rounded-xl bg-fuchsia-600/90 text-white font-bold text-sm shadow-lg hover:bg-fuchsia-500 transition-all flex items-center justify-center gap-2 ${hasComfyWorkflow ? '' : 'opacity-50 cursor-not-allowed'}" ${hasComfyWorkflow ? '' : 'disabled'}>
+                                                <i data-lucide="brain-circuit" class="w-4 h-4"></i><span>LLM 严格推理工作流并填充</span>
+                                            </button>
+                                            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5">仅分析工作流实际生效链路，忽略未接入/未执行节点。</p>
                                         </div>
                                     </div>
                                     <!-- 中列：图片和提取操作 -->
@@ -5656,6 +5960,10 @@
                                                 <div>
                                                     <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">Sampler</label>
                                                     <input type="text" value="${safeFormSampler}" oninput="handleModalFormInput('sampler', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: DPM++ 2M Karras">
+                                                </div>
+                                                <div class="col-span-2">
+                                                    <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1.5">LoRA（模型/CLIP 权重）</label>
+                                                    <input type="text" value="${safeFormLoraWeights}" oninput="handleModalFormInput('loraWeights', this.value)" class="w-full px-4 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="例如: detail_tweaker (M:0.8, C:1) | anime_style (M:0.6, C:0.7)">
                                                 </div>
                                             </div>
                                         </div>
