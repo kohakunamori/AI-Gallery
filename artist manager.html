@@ -8,18 +8,20 @@
     <link rel="stylesheet" href="./tailwind.generated.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <script>
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
-                    },
-                    transitionTimingFunction: {
-                        'ios': 'cubic-bezier(0.25, 0.1, 0.25, 1.0)',
+        if (window.tailwind) {
+            window.tailwind.config = {
+                darkMode: 'class',
+                theme: {
+                    extend: {
+                        fontFamily: {
+                            sans: ['Inter', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+                        },
+                        transitionTimingFunction: {
+                            'ios': 'cubic-bezier(0.25, 0.1, 0.25, 1.0)',
+                        }
                     }
                 }
-            }
+            };
         }
     </script>
     <style>
@@ -2844,6 +2846,9 @@
             container: null
         };
         let syncProgressResetTimer = null;
+        let syncPressHoldTimer = null;
+        let syncPressLongTriggered = false;
+        const SYNC_BUTTON_HOLD_MS = 720;
 
         const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
         const clearSyncProgressResetTimer = () => {
@@ -3098,6 +3103,37 @@
         
         window.openLayoutSettings = () => updateState({ isAISettingsOpen: true });
         window.openSyncSettings = () => updateState({ isSyncModalOpen: true });
+        const clearSyncButtonHoldTimer = () => {
+            if (syncPressHoldTimer) {
+                clearTimeout(syncPressHoldTimer);
+                syncPressHoldTimer = null;
+            }
+        };
+        window.handleSyncButtonPressStart = (event) => {
+            if (event?.type === 'mousedown' && event.button !== 0) return;
+            clearSyncButtonHoldTimer();
+            syncPressLongTriggered = false;
+            syncPressHoldTimer = setTimeout(async () => {
+                syncPressLongTriggered = true;
+                showToast('长按触发：正在同步当前配置到云端...');
+                try {
+                    await window.manualSyncUpload();
+                } catch (_) {
+                    // Error toast is handled inside manualSyncUpload
+                }
+            }, SYNC_BUTTON_HOLD_MS);
+        };
+        window.handleSyncButtonPressEnd = () => {
+            clearSyncButtonHoldTimer();
+        };
+        window.handleSyncButtonClick = () => {
+            clearSyncButtonHoldTimer();
+            if (syncPressLongTriggered) {
+                syncPressLongTriggered = false;
+                return;
+            }
+            window.openSyncSettings();
+        };
 
         window.setLayoutPreset = (preset) => {
             const base = state.displayConfig || {};
@@ -5003,6 +5039,75 @@
             return null;
         };
 
+        const extractPromptContextFromComfyGraph = (graphInput = {}) => {
+            const graph = normalizeComfyGraph(graphInput || {});
+            if (!graph || typeof graph !== 'object') return { positive: '', negative: '' };
+
+            const resolveInputText = (nodeId, depth = 0, seen = new Set()) => {
+                if (depth > 18 || seen.has(String(nodeId))) return '';
+                const key = String(nodeId);
+                seen.add(key);
+                const node = graph[key];
+                if (!node || typeof node !== 'object') return '';
+                const classType = String(node.class_type || '').toLowerCase();
+                const inputs = node.inputs && typeof node.inputs === 'object' ? node.inputs : {};
+
+                if (classType.includes('text multiline')) {
+                    return String(inputs.text || '').trim();
+                }
+                if (classType.includes('text concatenate')) {
+                    const ordered = ['text_a', 'text_b', 'text_c', 'text_d', 'text_e'];
+                    const chunks = [];
+                    ordered.forEach((name) => {
+                        const value = inputs[name];
+                        if (Array.isArray(value) && value.length >= 2) {
+                            const subText = resolveInputText(value[0], depth + 1, new Set(seen));
+                            if (subText) chunks.push(subText);
+                        } else {
+                            const plain = String(value || '').trim();
+                            if (plain) chunks.push(plain);
+                        }
+                    });
+                    const delimiter = String(inputs.delimiter || ', ');
+                    return chunks.filter(Boolean).join(delimiter);
+                }
+                if (classType.includes('cliptextencode')) {
+                    const textInput = inputs.text;
+                    if (Array.isArray(textInput) && textInput.length >= 2) {
+                        return resolveInputText(textInput[0], depth + 1, new Set(seen));
+                    }
+                    return String(textInput || '').trim();
+                }
+
+                const directText = String(inputs.text || '').trim();
+                if (directText) return directText;
+                return '';
+            };
+
+            let positive = '';
+            let negative = '';
+            Object.entries(graph).forEach(([id, node]) => {
+                const classType = String(node?.class_type || '').toLowerCase();
+                if (!classType.includes('ksampler')) return;
+                const inputs = node?.inputs && typeof node.inputs === 'object' ? node.inputs : {};
+
+                const positiveRef = inputs.positive;
+                if (!positive && Array.isArray(positiveRef) && positiveRef.length >= 2) {
+                    positive = resolveInputText(positiveRef[0]);
+                }
+
+                const negativeRef = inputs.negative;
+                if (!negative && Array.isArray(negativeRef) && negativeRef.length >= 2) {
+                    negative = resolveInputText(negativeRef[0]);
+                }
+            });
+
+            return {
+                positive: String(positive || '').replace(/\s+/g, ' ').trim(),
+                negative: String(negative || '').replace(/\s+/g, ' ').trim()
+            };
+        };
+
         const normalizeWorkflowFieldPatch = (patch = {}) => {
             const out = {};
             const pick = (key) => String(patch?.[key] || '').trim();
@@ -5054,8 +5159,14 @@
                 return;
             }
 
+            const fullWorkflow = normalizeComfyGraph(workflow) || {};
             const activeGraph = buildActiveComfyGraph(workflow);
-            const deterministic = normalizeWorkflowFieldPatch({ ...getComfyPromptFields(activeGraph), generatorType: 'COMFY' });
+            const promptContext = extractPromptContextFromComfyGraph(activeGraph);
+            const deterministic = normalizeWorkflowFieldPatch({
+                ...getComfyPromptFields(activeGraph),
+                styleTag: promptContext.positive || '',
+                generatorType: 'COMFY'
+            });
 
             const btn = document.getElementById('workflow-llm-btn');
             const originalHTML = btn?.innerHTML || '';
@@ -5065,12 +5176,35 @@
             }
 
             try {
-                const systemPrompt = 'You are a strict ComfyUI workflow analyzer. Use ONLY active nodes from the provided active_graph and infer actual generation parameters that are truly used. Ignore disconnected or inactive nodes. Return compact JSON only.';
+                const systemPrompt = [
+                    'You are an expert ComfyUI workflow reasoner.',
+                    'You MUST infer effective generation parameters by tracing actual runtime dependency from output/sampler paths.',
+                    'Use full_workflow for global context and active_graph for final effective path.',
+                    'Ignore disconnected / inactive / dead branches.',
+                    'Prefer values from nodes actually consumed by KSampler/FaceDetailer output path.',
+                    'For LoRA, output exact model+clip strengths from effective LoraLoader nodes.',
+                    'Return JSON ONLY (no markdown, no prose).'
+                ].join(' ');
                 const userPayload = {
                     task: 'infer_effective_generation_params',
+                    full_workflow: fullWorkflow,
                     active_graph: activeGraph,
+                    prompt_context: promptContext,
                     deterministic_hint: deterministic,
-                    required_keys: ['generatorType', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler', 'modelHash', 'loraWeights', 'styleTag', 'characterTag', 'clothingTag']
+                    required_keys: ['generatorType', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler', 'modelHash', 'loraWeights', 'styleTag', 'characterTag', 'clothingTag'],
+                    output_contract: {
+                        generatorType: 'string(COMFY|SD|NAI)',
+                        aiModel: 'string',
+                        cfgScale: 'string',
+                        seed: 'string',
+                        steps: 'string',
+                        sampler: 'string',
+                        modelHash: 'string',
+                        loraWeights: 'string or string[]',
+                        styleTag: 'string',
+                        characterTag: 'string',
+                        clothingTag: 'string'
+                    }
                 };
 
                 const response = await fetch(`${config.apiHost}/chat/completions`, {
@@ -5084,9 +5218,12 @@
                         temperature: 0,
                         messages: [
                             { role: 'system', content: systemPrompt },
-                            { role: 'user', content: `Analyze this workflow JSON:\n${JSON.stringify(userPayload)}` }
+                            {
+                                role: 'user',
+                                content: `Strictly analyze effective params from this ComfyUI workflow JSON and output ONLY one JSON object:\n${JSON.stringify(userPayload)}`
+                            }
                         ],
-                        max_tokens: 700
+                        max_tokens: 1200
                     })
                 });
 
@@ -5240,7 +5377,7 @@
                                 <i data-lucide="settings" class="w-6 h-6 text-indigo-500"></i>
                             </button>
 
-                            <button onclick="openSyncSettings()" title="同步" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
+                            <button onclick="handleSyncButtonClick()" onpointerdown="handleSyncButtonPressStart(event)" onpointerup="handleSyncButtonPressEnd()" onpointerleave="handleSyncButtonPressEnd()" onpointercancel="handleSyncButtonPressEnd()" title="同步（长按可直接上传当前配置）" class="btn-icon liquid-action p-3 rounded-full bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 shadow-lg border border-white/10 text-slate-700 dark:text-slate-200">
                                 <i data-lucide="refresh-cw" class="w-6 h-6 text-indigo-500"></i>
                             </button>
 
