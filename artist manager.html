@@ -3820,13 +3820,14 @@
         };
 
         const MAX_IMPORT_ARTISTS = 12000;
-        const MAX_IMPORT_FILE_BYTES = 40 * 1024 * 1024;
+        const IMPORT_WARN_SIZE_BYTES = 180 * 1024 * 1024;
+        const IMPORT_HARD_SIZE_BYTES = 1024 * 1024 * 1024;
         const parseJsonOrThrow = (rawText, sourceLabel = 'JSON') => {
             const text = String(rawText || '').trim();
             if (!text) throw new Error(`${sourceLabel} 内容为空`);
             const bytes = new Blob([text]).size;
-            if (bytes > MAX_IMPORT_FILE_BYTES) {
-                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 40 MB）`);
+            if (bytes > IMPORT_HARD_SIZE_BYTES) {
+                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 1024 MB）`);
             }
             try {
                 return JSON.parse(text);
@@ -3842,8 +3843,12 @@
         };
         const ensureImportFileSizeSafe = (file, sourceLabel = '导入文件') => {
             const bytes = Number(file?.size || 0);
-            if (bytes > MAX_IMPORT_FILE_BYTES) {
-                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 40 MB）`);
+            if (bytes > IMPORT_HARD_SIZE_BYTES) {
+                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 1024 MB）`);
+            }
+            if (bytes > IMPORT_WARN_SIZE_BYTES) {
+                const accepted = confirm(`${sourceLabel} 体积较大（约 ${Math.round(bytes / 1024 / 1024)} MB），导入可能耗时较长并占用较多内存。\n\n是否继续？`);
+                if (!accepted) throw new Error('已取消导入');
             }
         };
         const ensureImportMetadataSafe = (rawJson) => {
@@ -3885,6 +3890,64 @@
             const mergeResult = await mergeImportResolvedPayload(resolved);
             showToast(buildMergeSummary(contextLabel, mergeResult));
             return mergeResult;
+        };
+        const buildImportDiffSummary = (resolved, sourceLabel = '导入数据') => {
+            const incomingList = normalizeArtistList(resolved?.artists || []);
+            const localList = normalizeArtistList(state.liveArtists || []);
+
+            const toNormTag = (tag) => String(tag || '').trim().toLowerCase();
+            const localTagSet = new Set(localList.map((item) => toNormTag(item.tag)).filter(Boolean));
+            const incomingTagSet = new Set(incomingList.map((item) => toNormTag(item.tag)).filter(Boolean));
+
+            let incomingNewCount = 0;
+            incomingTagSet.forEach((tag) => {
+                if (!localTagSet.has(tag)) incomingNewCount += 1;
+            });
+            let localOnlyCount = 0;
+            localTagSet.forEach((tag) => {
+                if (!incomingTagSet.has(tag)) localOnlyCount += 1;
+            });
+
+            const overlapCount = Math.max(0, incomingTagSet.size - incomingNewCount);
+
+            const incomingCategories = new Set(normalizeCategoryList(resolved?.categories || []));
+            const localCategories = new Set(normalizeCategoryList(state.categories || []));
+            let categoryDelta = 0;
+            incomingCategories.forEach((category) => {
+                if (!localCategories.has(category)) categoryDelta += 1;
+            });
+
+            const settingsWillChange = !!(resolved?.settingsPatch && typeof resolved.settingsPatch === 'object');
+            const syncWillChange = !!(resolved?.syncConfigPatch && typeof resolved.syncConfigPatch === 'object');
+            const hasBackgroundPatch = !!String(resolved?.settingsPatch?.displayConfig?.backgroundImage || '').trim();
+
+            const changed = incomingNewCount > 0
+                || localOnlyCount > 0
+                || categoryDelta > 0
+                || settingsWillChange
+                || syncWillChange;
+
+            const summary = [
+                `${sourceLabel} 与本地数据存在差异：`,
+                `- 本地条目：${localList.length}`,
+                `- 备份条目：${incomingList.length}`,
+                `- 新增条目（备份有/本地无）：${incomingNewCount}`,
+                `- 重叠条目（按 tag）：${overlapCount}`,
+                `- 仅本地条目（本地有/备份无）：${localOnlyCount}`,
+                `- 新增分类：${categoryDelta}`,
+                `- 设置变更：${settingsWillChange ? '是' : '否'}`,
+                `- 同步配置变更：${syncWillChange ? '是' : '否'}`,
+                `${hasBackgroundPatch ? '- 备份包含背景图更新' : '- 备份不含背景图更新'}`,
+                '',
+                '确认继续合并到本地吗？'
+            ].join('\n');
+
+            return { changed, summary };
+        };
+        const confirmImportMergeIfDiff = (resolved, sourceLabel = '导入数据') => {
+            const { changed, summary } = buildImportDiffSummary(resolved, sourceLabel);
+            if (!changed) return true;
+            return confirm(summary);
         };
 
         window.handleExport = async () => {
@@ -4686,6 +4749,11 @@
                 updateSyncProgress(55, '数据拉取成功，正在解析...');
                 ensureImportMetadataSafe(rawJson);
                 const resolved = resolveImportPayload(rawJson);
+                const accepted = confirmImportMergeIfDiff(resolved, `${channel} 备份`);
+                if (!accepted) {
+                    finishSyncProgress('已取消合并');
+                    return;
+                }
                 updateSyncProgress(74, '解析完成，正在合并本地数据...');
                 await runResolvedImportMerge(resolved, `从 ${channel} 同步`);
                 updateSyncProgress(95, '合并完成，正在收尾...');
@@ -4709,6 +4777,11 @@
                     const rawJson = parseJsonOrThrow(rawText, '导入文件');
                     ensureImportMetadataSafe(rawJson);
                     const resolved = resolveImportPayload(rawJson);
+                    const accepted = confirmImportMergeIfDiff(resolved, '导入备份');
+                    if (!accepted) {
+                        showToast('已取消导入');
+                        return;
+                    }
                     await runResolvedImportMerge(resolved, '导入完成');
                 } catch (err) {
                     const message = String(err?.message || '格式错误');
