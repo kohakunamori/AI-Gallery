@@ -4745,7 +4745,10 @@
                 const uploadProgressHandler = (progress) => {
                     if (progress?.hasTotal && Number.isFinite(progress.percent)) {
                         const progressPercent = clampNumber(Math.round(8 + (progress.percent * 0.8)), 8, 88);
-                        updateSyncProgress(progressPercent, `正在上传到 ${channelLabel}... ${progress.percent}%`);
+                        const uploadLabel = channelLabel === 'S3'
+                            ? `正在上传到 ${channelLabel}...`
+                            : `正在上传到 ${channelLabel}... ${progress.percent}%`;
+                        updateSyncProgress(progressPercent, uploadLabel);
                     } else {
                         const loadedText = formatTransferSize(progress?.loaded || 0);
                         updateSyncProgress(12, `正在上传到 ${channelLabel}... 已发送 ${loadedText}`);
@@ -5798,18 +5801,36 @@
                 ? 'text-red-600 dark:text-red-300'
                 : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
 
-            container.innerHTML = `
-                <div class="fixed right-4 bottom-4 z-[95] w-[min(360px,calc(100vw-2rem))] animate-fade-in pointer-events-none">
-                    <div class="glass-card bg-white/92 dark:bg-slate-900/90 border border-white/70 dark:border-slate-700/70 rounded-2xl shadow-2xl px-4 py-3 pointer-events-auto">
-                        <div class="flex items-center justify-between text-xs mb-2">
-                            <span class="font-semibold ${toneClass}">${progressLabel}</span>
-                            <span class="font-mono text-slate-500 dark:text-slate-400">${progressPercent}%</span>
+            let root = container.querySelector('[data-sync-corner-root]');
+            if (!root) {
+                container.innerHTML = `
+                    <div data-sync-corner-root class="fixed right-4 bottom-4 z-[95] w-[min(360px,calc(100vw-2rem))] animate-fade-in pointer-events-none">
+                        <div class="glass-card bg-white/92 dark:bg-slate-900/90 border border-white/70 dark:border-slate-700/70 rounded-2xl shadow-2xl px-4 py-3 pointer-events-auto">
+                            <div class="flex items-center justify-between text-xs mb-2">
+                                <span data-sync-corner-label class="font-semibold text-indigo-600 dark:text-indigo-300"></span>
+                                <span data-sync-corner-percent class="font-mono text-slate-500 dark:text-slate-400"></span>
+                            </div>
+                            <div class="sync-progress-track">
+                                <div data-sync-corner-fill class="sync-progress-fill" style="width: 0%;"></div>
+                            </div>
                         </div>
-                        <div class="sync-progress-track">
-                            <div class="sync-progress-fill" style="width: ${progressPercent}%;"></div>
-                        </div>
-                    </div>
-                </div>`;
+                    </div>`;
+                root = container.querySelector('[data-sync-corner-root]');
+            }
+
+            const labelEl = container.querySelector('[data-sync-corner-label]');
+            const percentEl = container.querySelector('[data-sync-corner-percent]');
+            const fillEl = container.querySelector('[data-sync-corner-fill]');
+            if (labelEl) {
+                labelEl.className = `font-semibold ${toneClass}`;
+                labelEl.textContent = state.syncProgressLabel || '同步处理中...';
+            }
+            if (percentEl) {
+                percentEl.textContent = `${progressPercent}%`;
+            }
+            if (fillEl) {
+                fillEl.style.width = `${progressPercent}%`;
+            }
         };
 
         const renderThemeMenu = () => {
