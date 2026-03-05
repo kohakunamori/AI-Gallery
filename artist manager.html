@@ -786,6 +786,9 @@
             min-height: 0;
             z-index: 35;
         }
+        .sidebar-container.hidden {
+            display: none !important;
+        }
 
         .generator-drag-handle {
             cursor: move;
@@ -2446,10 +2449,36 @@
             return merged;
         };
         const normalizeAiConfig = (input = {}) => {
-            const apiHost = String(input?.apiHost || 'https://api.openai.com/v1').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
-            const apiKey = String(input?.apiKey || '').trim();
-            const model = String(input?.model || 'gpt-4o').trim() || 'gpt-4o';
-            return { apiHost, apiKey, model };
+            const defaultHost = 'https://api.openai.com/v1';
+            const defaultModel = 'gpt-4o';
+
+            const hasTitleHost = typeof input?.titleApiHost === 'string' && input.titleApiHost.trim() !== '';
+            const hasWorkflowHost = typeof input?.workflowApiHost === 'string' && input.workflowApiHost.trim() !== '';
+            const hasTitleKey = typeof input?.titleApiKey === 'string' && input.titleApiKey.trim() !== '';
+            const hasWorkflowKey = typeof input?.workflowApiKey === 'string' && input.workflowApiKey.trim() !== '';
+            const hasTitleModel = typeof input?.titleModel === 'string' && input.titleModel.trim() !== '';
+            const hasWorkflowModel = typeof input?.workflowModel === 'string' && input.workflowModel.trim() !== '';
+
+            const legacyHost = String(input?.apiHost || '').trim().replace(/\/+$/, '');
+            const legacyKey = String(input?.apiKey || '').trim();
+            const legacyModel = String(input?.model || '').trim();
+
+            const titleApiHost = String(hasTitleHost ? input.titleApiHost : (legacyHost || defaultHost)).trim().replace(/\/+$/, '') || defaultHost;
+            const titleApiKey = String(hasTitleKey ? input.titleApiKey : legacyKey).trim();
+            const titleModel = String(hasTitleModel ? input.titleModel : (legacyModel || defaultModel)).trim() || defaultModel;
+
+            const workflowApiHost = String(hasWorkflowHost ? input.workflowApiHost : (legacyHost || defaultHost)).trim().replace(/\/+$/, '') || defaultHost;
+            const workflowApiKey = String(hasWorkflowKey ? input.workflowApiKey : legacyKey).trim();
+            const workflowModel = String(hasWorkflowModel ? input.workflowModel : (legacyModel || defaultModel)).trim() || defaultModel;
+
+            return {
+                titleApiHost,
+                titleApiKey,
+                titleModel,
+                workflowApiHost,
+                workflowApiKey,
+                workflowModel
+            };
         };
         const getDefaultWebdavConfig = () => ({
             endpoint: '',
@@ -4782,6 +4811,16 @@
                 updateState({ viewingNote: { id: artist.id, name: artist.name, note: artist.note } });
             }
         };
+        window.viewLoraDetails = (id, e) => {
+            e.stopPropagation();
+            const artist = state.liveArtists.find((a) => a.id === id);
+            const loraText = String(artist?.loraWeights || '').trim();
+            if (!artist || !loraText) {
+                showToast('暂无 LoRA 信息');
+                return;
+            }
+            updateState({ viewingNote: { id: artist.id, name: `${artist.name} · LoRA`, note: loraText } });
+        };
         window.closeNoteViewer = () => updateState({ viewingNote: null });
 
         // --- AI Configuration & Logic ---
@@ -4917,9 +4956,12 @@
             renderModals();
         };
         window.saveAISettings = () => {
-             const apiHost = (document.getElementById('ai-host-input').value || 'https://api.openai.com/v1').replace(/\/+$/, '');
-             const apiKey = document.getElementById('ai-key-input').value.trim();
-             const model = document.getElementById('ai-model-input').value.trim() || 'gpt-4o';
+             const titleApiHost = (document.getElementById('ai-title-host-input')?.value || 'https://api.openai.com/v1').replace(/\/+$/, '');
+             const titleApiKey = (document.getElementById('ai-title-key-input')?.value || '').trim();
+             const workflowApiHost = (document.getElementById('ai-workflow-host-input')?.value || 'https://api.openai.com/v1').replace(/\/+$/, '');
+             const workflowApiKey = (document.getElementById('ai-workflow-key-input')?.value || '').trim();
+             const titleModel = (document.getElementById('ai-title-model-input')?.value || '').trim() || 'gpt-4o';
+             const workflowModel = (document.getElementById('ai-workflow-model-input')?.value || '').trim() || 'gpt-4o';
              const showCardInfo = document.getElementById('show-card-info-toggle').checked;
              const blurNSFW = document.getElementById('blur-nsfw-toggle').checked;
              const layoutPreset = document.getElementById('layout-preset-select').value;
@@ -4928,7 +4970,7 @@
              const customAspect = document.getElementById('layout-custom-aspect').value || '3/4';
              const styleMode = document.getElementById('style-mode-select').value || 'default';
               
-             const newConfig = normalizeAiConfig({ apiHost, apiKey, model });
+             const newConfig = normalizeAiConfig({ titleApiHost, titleApiKey, titleModel, workflowApiHost, workflowApiKey, workflowModel });
              const newDisplayConfig = normalizeDisplayConfig({ ...state.displayConfig, showCardInfo, blurNSFW, layoutPreset, customCols, customGap, customAspect, styleMode });
              updateState({ aiConfig: newConfig, displayConfig: newDisplayConfig, isAISettingsOpen: false });
              localStorage.setItem(AI_CONFIG_KEY, JSON.stringify(newConfig));
@@ -5040,72 +5082,7 @@
         };
 
         const extractPromptContextFromComfyGraph = (graphInput = {}) => {
-            const graph = normalizeComfyGraph(graphInput || {});
-            if (!graph || typeof graph !== 'object') return { positive: '', negative: '' };
-
-            const resolveInputText = (nodeId, depth = 0, seen = new Set()) => {
-                if (depth > 18 || seen.has(String(nodeId))) return '';
-                const key = String(nodeId);
-                seen.add(key);
-                const node = graph[key];
-                if (!node || typeof node !== 'object') return '';
-                const classType = String(node.class_type || '').toLowerCase();
-                const inputs = node.inputs && typeof node.inputs === 'object' ? node.inputs : {};
-
-                if (classType.includes('text multiline')) {
-                    return String(inputs.text || '').trim();
-                }
-                if (classType.includes('text concatenate')) {
-                    const ordered = ['text_a', 'text_b', 'text_c', 'text_d', 'text_e'];
-                    const chunks = [];
-                    ordered.forEach((name) => {
-                        const value = inputs[name];
-                        if (Array.isArray(value) && value.length >= 2) {
-                            const subText = resolveInputText(value[0], depth + 1, new Set(seen));
-                            if (subText) chunks.push(subText);
-                        } else {
-                            const plain = String(value || '').trim();
-                            if (plain) chunks.push(plain);
-                        }
-                    });
-                    const delimiter = String(inputs.delimiter || ', ');
-                    return chunks.filter(Boolean).join(delimiter);
-                }
-                if (classType.includes('cliptextencode')) {
-                    const textInput = inputs.text;
-                    if (Array.isArray(textInput) && textInput.length >= 2) {
-                        return resolveInputText(textInput[0], depth + 1, new Set(seen));
-                    }
-                    return String(textInput || '').trim();
-                }
-
-                const directText = String(inputs.text || '').trim();
-                if (directText) return directText;
-                return '';
-            };
-
-            let positive = '';
-            let negative = '';
-            Object.entries(graph).forEach(([id, node]) => {
-                const classType = String(node?.class_type || '').toLowerCase();
-                if (!classType.includes('ksampler')) return;
-                const inputs = node?.inputs && typeof node.inputs === 'object' ? node.inputs : {};
-
-                const positiveRef = inputs.positive;
-                if (!positive && Array.isArray(positiveRef) && positiveRef.length >= 2) {
-                    positive = resolveInputText(positiveRef[0]);
-                }
-
-                const negativeRef = inputs.negative;
-                if (!negative && Array.isArray(negativeRef) && negativeRef.length >= 2) {
-                    negative = resolveInputText(negativeRef[0]);
-                }
-            });
-
-            return {
-                positive: String(positive || '').replace(/\s+/g, ' ').trim(),
-                negative: String(negative || '').replace(/\s+/g, ' ').trim()
-            };
+            return { positive: '', negative: '' };
         };
 
         const normalizeWorkflowFieldPatch = (patch = {}) => {
@@ -5116,6 +5093,7 @@
                 if (normalized) out[key] = normalized;
             };
 
+            assignIfValue('tag', pick('tag'));
             assignIfValue('aiModel', pick('aiModel'));
             assignIfValue('cfgScale', pick('cfgScale'));
             assignIfValue('seed', pick('seed'));
@@ -5139,6 +5117,33 @@
             return out;
         };
 
+        const unwrapWorkflowInferencePayload = (parsed = null) => {
+            if (!parsed || typeof parsed !== 'object') return {};
+            const candidates = [
+                parsed,
+                parsed.full_workflow,
+                parsed.result,
+                parsed.data,
+                parsed.payload,
+                parsed.output,
+                parsed.inference,
+                parsed.params,
+                parsed.fields
+            ].filter((item) => item && typeof item === 'object');
+            const preferred = candidates.find((item) => (
+                item.aiModel !== undefined
+                || item.cfgScale !== undefined
+                || item.seed !== undefined
+                || item.steps !== undefined
+                || item.sampler !== undefined
+                || item.styleTag !== undefined
+                || item.characterTag !== undefined
+                || item.clothingTag !== undefined
+                || item.loraWeights !== undefined
+            ));
+            return preferred || parsed;
+        };
+
         const applyWorkflowAutofillPatch = (patch = {}) => {
             const normalized = normalizeWorkflowFieldPatch(patch);
             if (!Object.keys(normalized).length) return false;
@@ -5149,12 +5154,15 @@
         window.extractWorkflowParamsWithLLM = async () => {
             const workflow = state.comfyWorkflowData;
             const config = state.aiConfig || {};
+            const llmHost = String(config.workflowApiHost || 'https://api.openai.com/v1').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
+            const llmKey = String(config.workflowApiKey || '').trim();
+            const llmModel = String(config.workflowModel || 'gpt-4o').trim() || 'gpt-4o';
             if (!workflow || typeof workflow !== 'object') {
                 showToast('当前没有可分析的 ComfyUI 工作流');
                 return;
             }
-            if (!config.apiKey) {
-                showToast('请先配置 AI Key');
+            if (!llmKey) {
+                showToast('请先配置“工作流推理”的 API Key');
                 window.openAISettings();
                 return;
             }
@@ -5164,7 +5172,6 @@
             const promptContext = extractPromptContextFromComfyGraph(activeGraph);
             const deterministic = normalizeWorkflowFieldPatch({
                 ...getComfyPromptFields(activeGraph),
-                styleTag: promptContext.positive || '',
                 generatorType: 'COMFY'
             });
 
@@ -5177,23 +5184,26 @@
 
             try {
                 const systemPrompt = [
-                    'You are an expert ComfyUI workflow reasoner.',
-                    'You MUST infer effective generation parameters by tracing actual runtime dependency from output/sampler paths.',
-                    'Use full_workflow for global context and active_graph for final effective path.',
-                    'Ignore disconnected / inactive / dead branches.',
-                    'Prefer values from nodes actually consumed by KSampler/FaceDetailer output path.',
-                    'For LoRA, output exact model+clip strengths from effective LoraLoader nodes.',
-                    'Return JSON ONLY (no markdown, no prose).'
-                ].join(' ');
+                    'You are an advanced ComfyUI Workflow Execution Engine.',
+                    'Your task is to analyze the provided ComfyUI workflow JSON and accurately extract the final generation parameters.',
+                    'CRITICAL GRAPH TRACING RULES:',
+                    '1. START at the terminal nodes (e.g., KSampler, FaceDetailer, SaveImage).',
+                    '2. TRACE BACKWARDS through the node links (represented as ["node_id", slot_index]).',
+                    '3. EVALUATE LOGIC NODES: If you encounter routing nodes (like "easy ifElse", "Switch"), you MUST evaluate their control inputs (like "boolean").',
+                    '   - Example: If "easy ifElse" has "boolean": false, you MUST ONLY trace the "on_false" path. The "on_true" path is DEAD and MUST be ignored.',
+                    '4. EVALUATE STRING MANIPULATION: If you encounter "Text Concatenate", "ShowText", or "Text Multiline", mentally execute them to build the exact final string.',
+                    '5. LORAS: Find all active "LoraLoader" nodes in the execution path. Extract their names and strengths. Format: "lora_name (M:model_weight, C:clip_weight) | ...".',
+                    'OUTPUT REQUIREMENTS:',
+                    'Return ONLY a valid JSON object matching the output_contract schema. No markdown, no explanations.'
+                ].join('\n');
                 const userPayload = {
                     task: 'infer_effective_generation_params',
                     full_workflow: fullWorkflow,
                     active_graph: activeGraph,
-                    prompt_context: promptContext,
-                    deterministic_hint: deterministic,
-                    required_keys: ['generatorType', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler', 'modelHash', 'loraWeights', 'styleTag', 'characterTag', 'clothingTag'],
+                    required_keys: ['generatorType', 'tag', 'aiModel', 'cfgScale', 'seed', 'steps', 'sampler', 'modelHash', 'loraWeights', 'styleTag', 'characterTag', 'clothingTag'],
                     output_contract: {
                         generatorType: 'string(COMFY|SD|NAI)',
+                        tag: 'string (final positive prompt text)',
                         aiModel: 'string',
                         cfgScale: 'string',
                         seed: 'string',
@@ -5207,14 +5217,14 @@
                     }
                 };
 
-                const response = await fetch(`${config.apiHost}/chat/completions`, {
+                const response = await fetch(`${llmHost}/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${config.apiKey}`
+                        'Authorization': `Bearer ${llmKey}`
                     },
                     body: JSON.stringify({
-                        model: config.model,
+                        model: llmModel,
                         temperature: 0,
                         messages: [
                             { role: 'system', content: systemPrompt },
@@ -5235,7 +5245,8 @@
                 const data = await response.json();
                 const llmText = String(data?.choices?.[0]?.message?.content || '').trim();
                 const parsed = parseWorkflowInferenceJson(llmText);
-                const llmPatch = normalizeWorkflowFieldPatch(parsed || {});
+                const unwrapped = unwrapWorkflowInferencePayload(parsed);
+                const llmPatch = normalizeWorkflowFieldPatch(unwrapped || {});
                 const mergedPatch = { ...deterministic, ...llmPatch, generatorType: 'COMFY' };
                 const updated = applyWorkflowAutofillPatch(mergedPatch);
                 if (!updated) {
@@ -5265,12 +5276,15 @@
         window.analyzeArtistStyle = async () => {
             const { imageUrl } = state.formData;
             const config = state.aiConfig || {};
+            const llmHost = String(config.titleApiHost || 'https://api.openai.com/v1').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
+            const llmKey = String(config.titleApiKey || '').trim();
+            const llmModel = String(config.titleModel || 'gpt-4o').trim() || 'gpt-4o';
             const presetSelect = document.getElementById('analyze-preset-select');
             const presetKey = presetSelect?.value || 'style';
             const preset = AI_TITLE_PRESETS[presetKey] || AI_TITLE_PRESETS.style;
             
             if (!imageUrl) { showToast('请先上传图片'); return; }
-            if (!config.apiKey) { showToast('请先配置 AI Key'); window.openAISettings(); return; }
+            if (!llmKey) { showToast('请先配置“标题填充”的 API Key'); window.openAISettings(); return; }
 
             const btn = document.getElementById('analyze-btn');
             const originalHTML = btn.innerHTML;
@@ -5283,14 +5297,14 @@
                     throw new Error('当前图片不是可用的 URL 或 data URI，请重新上传图片后再试');
                 }
 
-                const response = await fetch(`${config.apiHost}/chat/completions`, {
+                const response = await fetch(`${llmHost}/chat/completions`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${config.apiKey}`
+                        'Authorization': `Bearer ${llmKey}`
                     },
                     body: JSON.stringify({
-                        model: config.model,
+                        model: llmModel,
                         messages: [
                             {
                                 role: "user",
@@ -5539,6 +5553,9 @@
                 const escapedImageUrl = escapeHtml(artist.imageUrl || '');
                 const notePlain = String(artist.note || '');
                 const escapedNote = escapeHtml(notePlain.length > 50 ? `${notePlain.slice(0, 50)}...` : notePlain);
+                const loraPlain = String(artist.loraWeights || '').trim();
+                const escapedLora = escapeHtml(loraPlain);
+                const escapedLoraSummary = escapeHtml(loraPlain.length > 42 ? `${loraPlain.slice(0, 42)}...` : loraPlain);
                 const hoverDetailAttrs = isMobileUi ? '' : ` onmouseenter="showHoverDetail('${escapedId}', event)" onmouseleave="scheduleHideHoverDetail(event)"`;
                 return `
                 <div onclick="toggleSelection('${escapedId}')"${hoverDetailAttrs} data-artist-id="${escapedId}" class="group artist-card relative glass-card rounded-3xl overflow-hidden cursor-pointer hover:-translate-y-2 transition-all duration-300 bg-white/40 dark:bg-slate-800/40 ${isSel ? 'ring-4 ring-indigo-500 dark:ring-indigo-400 shadow-2xl scale-[1.02]' : 'hover:shadow-xl dark:border-white/5'}">
@@ -5551,6 +5568,7 @@
                         
                         <div class="absolute top-3 right-3 flex flex-col gap-2 translate-x-14 opacity-0 group-hover:translate-x-0 group-hover:opacity-100 transition-all duration-300 z-30">
                              ${artist.note ? `<button onclick="viewNote('${escapedId}', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-amber-600 dark:text-amber-400 rounded-full backdrop-blur-md shadow-lg hover:bg-amber-50 dark:hover:bg-slate-700" title="${escapedNote}"><i data-lucide="file-text" class="w-5 h-5"></i></button>` : ''}
+                             ${loraPlain ? `<button onclick="viewLoraDetails('${escapedId}', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-fuchsia-600 dark:text-fuchsia-400 rounded-full backdrop-blur-md shadow-lg hover:bg-fuchsia-50 dark:hover:bg-slate-700" title="查看 LoRA 详情"><i data-lucide="list-tree" class="w-5 h-5"></i></button>` : ''}
                              <button onclick="copyTag('${escapedId}', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-indigo-600 dark:text-indigo-400 rounded-full backdrop-blur-md shadow-lg hover:bg-indigo-50 dark:hover:bg-slate-700" title="复制 Tag"><i data-lucide="copy" class="w-5 h-5"></i></button>
                              <button onclick="handleCardAction('${escapedId}', 'preview', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 rounded-full backdrop-blur-md shadow-lg hover:bg-indigo-50 dark:hover:bg-slate-700" title="预览"><i data-lucide="eye" class="w-5 h-5"></i></button>
                              <button onclick="handleCardAction('${escapedId}', 'edit', event)" class="btn-icon liquid-action p-2.5 bg-white/90 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200 rounded-full backdrop-blur-md shadow-lg hover:bg-indigo-50 dark:hover:bg-slate-700" title="编辑"><i data-lucide="edit-3" class="w-5 h-5"></i></button>
@@ -5573,6 +5591,7 @@
                                 ${artist.danbooruCount > 0 ? `<span class="text-[10px] font-bold bg-white/20 text-white px-1.5 py-0.5 rounded flex items-center gap-0.5 backdrop-blur-sm"><i data-lucide="layers" class="w-2.5 h-2.5"></i>${artist.danbooruCount}</span>` : ''}
                             </div>
                         </div>
+                        ${loraPlain ? `<div class="mt-1.5 flex items-center gap-1.5 min-w-0"><span class="text-[10px] font-bold bg-fuchsia-500/35 text-fuchsia-100 px-1.5 py-0.5 rounded border border-fuchsia-300/30 backdrop-blur-sm">LoRA</span><span class="text-[10px] text-white/80 truncate max-w-[70%] drop-shadow" title="${escapedLora}">${escapedLoraSummary}</span></div>` : ''}
 
                     </div>
                 </div>`;
@@ -5844,9 +5863,12 @@
             if (state.isAISettingsOpen) {
                 const config = state.aiConfig || {};
                 const displayConfig = { ...getDefaultDisplayConfig(), ...(state.displayConfig || {}) };
-                const safeApiHost = escapeHtml(config.apiHost || 'https://api.openai.com/v1');
-                const safeApiKey = escapeHtml(config.apiKey || '');
-                const safeModel = escapeHtml(config.model || 'gpt-4o');
+                const safeTitleApiHost = escapeHtml(config.titleApiHost || 'https://api.openai.com/v1');
+                const safeTitleApiKey = escapeHtml(config.titleApiKey || '');
+                const safeTitleModel = escapeHtml(config.titleModel || 'gpt-4o');
+                const safeWorkflowApiHost = escapeHtml(config.workflowApiHost || 'https://api.openai.com/v1');
+                const safeWorkflowApiKey = escapeHtml(config.workflowApiKey || '');
+                const safeWorkflowModel = escapeHtml(config.workflowModel || 'gpt-4o');
                 aiContainer.innerHTML = `
                     <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; z-index: 60; padding: 1rem;" class="animate-fade-in">
                         <div class="absolute inset-0 bg-slate-900/30 dark:bg-black/60 backdrop-blur-md" onclick="closeAISettings()"></div> 
@@ -5927,16 +5949,29 @@
                                         <h3 class="text-sm font-bold text-slate-600 dark:text-slate-300 flex items-center gap-2"><i data-lucide="sparkles" class="w-4 h-4"></i>AI 分析配置</h3>
                                         <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-4">
                                     <div>
-                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">API Host</label>
-                                        <input type="text" id="ai-host-input" value="${safeApiHost}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="https://api.openai.com/v1">
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">标题填充 Endpoint</label>
+                                        <input type="text" id="ai-title-host-input" value="${safeTitleApiHost}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="https://api.openai.com/v1">
                                     </div>
                                     <div>
-                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">API Key</label>
-                                        <input type="password" id="ai-key-input" value="${safeApiKey}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="sk-...">
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">标题填充 API Key</label>
+                                        <input type="password" id="ai-title-key-input" value="${safeTitleApiKey}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="sk-...">
                                     </div>
                                     <div>
-                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">模型名称 (Model)</label>
-                                        <input type="text" id="ai-model-input" value="${safeModel}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="gpt-4o">
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">标题填充模型</label>
+                                        <input type="text" id="ai-title-model-input" value="${safeTitleModel}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="留空则默认 gpt-4o">
+                                    </div>
+                                    <div class="h-px bg-slate-200 dark:bg-slate-700"></div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">工作流推理 Endpoint</label>
+                                        <input type="text" id="ai-workflow-host-input" value="${safeWorkflowApiHost}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="https://api.openai.com/v1">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">工作流推理 API Key</label>
+                                        <input type="password" id="ai-workflow-key-input" value="${safeWorkflowApiKey}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="sk-...">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">工作流推理模型</label>
+                                        <input type="text" id="ai-workflow-model-input" value="${safeWorkflowModel}" class="w-full px-5 py-3 rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm shadow-sm" placeholder="留空则默认 gpt-4o">
                                     </div>
                                         </div>
                                     </div>
