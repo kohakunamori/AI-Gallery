@@ -1018,6 +1018,7 @@
     <div id="modal-container"></div>
     <div id="ai-settings-container"></div>
     <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]"></div>
+    <div id="sync-corner-progress-container"></div>
     <div id="preview-modal-container"></div>
     <div id="sync-modal-container"></div>
     <div id="hover-detail-container"></div>
@@ -3190,15 +3191,23 @@
 
             if (shouldRender) {
                 const fullRender = newState.liveArtists || newState.searchQuery !== undefined || newState.activeCategory !== undefined || newState.categories !== undefined || (newState.sortMode && newState.sortMode !== oldSort) || newState.theme;
-        if (fullRender) {
+                if (fullRender) {
                     renderApp(); 
                 } else {
+                    const syncProgressChanged = newState.syncProgressVisible !== undefined
+                        || newState.syncProgressPercent !== undefined
+                        || newState.syncProgressLabel !== undefined
+                        || newState.syncProgressStatus !== undefined;
                     if (newState.selectedArtists) {
                         renderArtistCards(); 
                         renderSelectionArea(); 
                     }
                     if (newState.isModalOpen !== undefined || newState.isAISettingsOpen !== undefined || newState.isSyncModalOpen !== undefined) renderModals();
                     if (newState.syncMethod !== undefined || newState.webdavConfig !== undefined || newState.s3Config !== undefined) {
+                        if (state.isSyncModalOpen) renderModals();
+                    }
+                    if (syncProgressChanged) {
+                        renderSyncCornerProgress();
                         if (state.isSyncModalOpen) renderModals();
                     }
                     if (newState.previewImage !== undefined || newState.viewingNote !== undefined || newState.viewingLora !== undefined) renderModals();
@@ -4430,7 +4439,7 @@
             return { loaded, total: hasTotal ? total : 0, hasTotal, percent };
         };
 
-        const XHR_TIMEOUT_MS = 45000;
+        const XHR_TIMEOUT_MS = 180000;
 
         const executeXhrRequest = ({ method, url, headers = {}, body = null, onUploadProgress, onDownloadProgress }) => {
             return new Promise((resolve, reject) => {
@@ -5769,9 +5778,38 @@
             renderArtistCards();
             renderSelectionArea();
             renderModals();
+            renderSyncCornerProgress();
             lucide.createIcons();
             applyTheme();
             applyDisplayPersonalization();
+        };
+
+        const renderSyncCornerProgress = () => {
+            const container = document.getElementById('sync-corner-progress-container');
+            if (!container) return;
+            if (!state.syncProgressVisible) {
+                container.innerHTML = '';
+                return;
+            }
+
+            const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
+            const progressLabel = escapeHtml(state.syncProgressLabel || '同步处理中...');
+            const toneClass = state.syncProgressStatus === 'error'
+                ? 'text-red-600 dark:text-red-300'
+                : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
+
+            container.innerHTML = `
+                <div class="fixed right-4 bottom-4 z-[95] w-[min(360px,calc(100vw-2rem))] animate-fade-in pointer-events-none">
+                    <div class="glass-card bg-white/92 dark:bg-slate-900/90 border border-white/70 dark:border-slate-700/70 rounded-2xl shadow-2xl px-4 py-3 pointer-events-auto">
+                        <div class="flex items-center justify-between text-xs mb-2">
+                            <span class="font-semibold ${toneClass}">${progressLabel}</span>
+                            <span class="font-mono text-slate-500 dark:text-slate-400">${progressPercent}%</span>
+                        </div>
+                        <div class="sync-progress-track">
+                            <div class="sync-progress-fill" style="width: ${progressPercent}%;"></div>
+                        </div>
+                    </div>
+                </div>`;
         };
 
         const renderThemeMenu = () => {
