@@ -5022,6 +5022,32 @@
                 }
             });
         };
+        window.copyLoraName = async (name, e) => {
+            if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+            const text = String(name || '').trim();
+            if (!text) {
+                showToast('LoRA 名称为空，无法复制');
+                return;
+            }
+            try {
+                if (navigator?.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.focus();
+                    textarea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                }
+                showToast('LoRA 名称已复制');
+            } catch (error) {
+                showToast('复制失败，请手动复制');
+            }
+        };
         window.closeNoteViewer = () => updateState({ viewingNote: null });
         window.closeLoraViewer = () => updateState({ viewingLora: null });
 
@@ -6104,7 +6130,8 @@
                                     const safeName = escapeHtml(parsed.name || String(item || '').trim());
                                     const safeModelWeight = escapeHtml(parsed.modelWeight);
                                     const safeClipWeight = escapeHtml(parsed.clipWeight);
-                                    return `<div class="rounded-xl bg-white/90 dark:bg-slate-800/75 border border-slate-200 dark:border-slate-700 px-3.5 py-3 text-sm text-slate-700 dark:text-slate-200 shadow-sm"><div class="flex items-start gap-3"><span class="inline-flex items-center justify-center text-[11px] font-bold text-fuchsia-700 dark:text-fuchsia-300 bg-fuchsia-100 dark:bg-fuchsia-900/40 border border-fuchsia-200 dark:border-fuchsia-700/50 rounded-md px-1.5 py-0.5 mt-0.5">#${index + 1}</span><div class="min-w-0 flex-1"><div class="text-sm font-medium text-slate-800 dark:text-slate-100 break-all">${safeName}</div></div><div class="flex items-center gap-1.5 shrink-0"><span class="inline-flex items-center gap-1 rounded-full border border-indigo-200 dark:border-indigo-700/60 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap">模型权重 ${safeModelWeight}</span><span class="inline-flex items-center gap-1 rounded-full border border-cyan-200 dark:border-cyan-700/60 bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap">CLIP权重 ${safeClipWeight}</span></div></div></div>`;
+                                    const encodedName = encodeURIComponent(parsed.name || String(item || '').trim());
+                                    return `<div class="rounded-xl bg-white/90 dark:bg-slate-800/75 border border-slate-200 dark:border-slate-700 px-3.5 py-3 text-sm text-slate-700 dark:text-slate-200 shadow-sm"><div class="flex items-start gap-3"><span class="inline-flex items-center justify-center text-[11px] font-bold text-fuchsia-700 dark:text-fuchsia-300 bg-fuchsia-100 dark:bg-fuchsia-900/40 border border-fuchsia-200 dark:border-fuchsia-700/50 rounded-md px-1.5 py-0.5 mt-0.5">#${index + 1}</span><div class="min-w-0 flex-1"><div class="text-sm font-medium text-slate-800 dark:text-slate-100 break-all">${safeName}</div></div><div class="flex items-center gap-1.5 shrink-0"><button onclick="copyLoraName(decodeURIComponent('${encodedName}'), event)" class="btn-icon liquid-action inline-flex items-center gap-1 rounded-full border border-amber-200 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap" title="复制 LoRA 名称"><i data-lucide="copy" class="w-3.5 h-3.5"></i>复制名称</button><span class="inline-flex items-center gap-1 rounded-full border border-indigo-200 dark:border-indigo-700/60 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap">模型权重 ${safeModelWeight}</span><span class="inline-flex items-center gap-1 rounded-full border border-cyan-200 dark:border-cyan-700/60 bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap">CLIP权重 ${safeClipWeight}</span></div></div></div>`;
                                 }).join('')}
                             </div>
                         </div>
