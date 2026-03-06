@@ -13,9 +13,12 @@ Desktop.ini
 # Sisyphus / OpenCode internal
 .sisyphus/
 skills/
+.claude/
 
-# Test images (keep example if needed)
+# Local screenshots / temp images
 *.png
+!pwa-192.png
+!pwa-512.png
 
 # Local reference / temp files
 AI-Image-Metadata-Editor.html

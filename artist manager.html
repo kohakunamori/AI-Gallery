@@ -3,10 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>AI画廊</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" sizes="192x192" href="./pwa-192.png">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236366f1'/%3E%3Cstop offset='100%25' stop-color='%233b82f6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M14 45l12-14 8 8 10-12 6 18H14z' fill='white' fill-opacity='.92'/%3E%3Ccircle cx='23' cy='22' r='5' fill='white' fill-opacity='.95'/%3E%3C/svg%3E">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js').catch((error) => {
+                    console.warn('Service worker register failed:', error);
+                });
+            });
+        }
+    </script>
     <script>
         if (window.tailwind) {
             window.tailwind.config = {
@@ -1337,15 +1351,46 @@
         let deferToastRendering = false;
         const pendingToastMessages = [];
 
-        const renderToastMessage = (message) => {
-            const container = document.getElementById('toast-container');
-            if (!container) return;
+        const getActiveOverlayToastHost = () => {
+            let host = document.getElementById('overlay-toast-container');
+            if (!host) {
+                host = document.createElement('div');
+                host.id = 'overlay-toast-container';
+                host.dataset.overlayToastHost = 'viewport';
+                host.style.position = 'fixed';
+                host.style.left = '50%';
+                host.style.bottom = 'calc(1rem + env(safe-area-inset-bottom, 0px))';
+                host.style.transform = 'translateX(-50%)';
+                host.style.zIndex = '150';
+                host.style.width = 'auto';
+                host.style.maxWidth = 'min(92vw, 560px)';
+                host.style.display = 'flex';
+                host.style.flexDirection = 'column';
+                host.style.alignItems = 'center';
+                host.style.gap = '0.5rem';
+                host.style.pointerEvents = 'none';
+                document.body.appendChild(host);
+            }
+            return host;
+        };
+
+        const renderToastMessage = (message, options = {}) => {
+            const scope = options.scope === 'overlay' ? 'overlay' : 'global';
+            const container = scope === 'overlay' ? getActiveOverlayToastHost() : document.getElementById('toast-container');
+            if (!container) return false;
             const toastMessage = String(message || '');
-            if (!toastMessage) return;
-            if (activeToastCount >= 3) {
+            if (!toastMessage) return false;
+            const isOverlayToast = scope === 'overlay';
+            const maxVisibleToasts = isOverlayToast ? 2 : 3;
+            const currentCount = isOverlayToast ? container.children.length : activeToastCount;
+            if (currentCount >= maxVisibleToasts) {
                 const first = container.firstElementChild;
-                if (first) container.removeChild(first);
-                activeToastCount = Math.max(0, activeToastCount - 1);
+                if (first) {
+                    container.removeChild(first);
+                    if (!isOverlayToast) {
+                        activeToastCount = Math.max(0, activeToastCount - 1);
+                    }
+                }
             }
             const el = document.createElement('div');
             el.className = "app-toast animate-fade-in";
@@ -1357,14 +1402,19 @@
             el.appendChild(icon);
             el.appendChild(text);
             container.appendChild(el);
-            activeToastCount++;
+            if (!isOverlayToast) {
+                activeToastCount++;
+            }
             lucide.createIcons(el);
             setTimeout(() => {
                 if (container.contains(el)) {
                     container.removeChild(el);
-                    activeToastCount = Math.max(0, activeToastCount - 1);
+                    if (!isOverlayToast) {
+                        activeToastCount = Math.max(0, activeToastCount - 1);
+                    }
                 }
             }, 2500);
+            return true;
         };
 
         const flushPendingToasts = () => {
@@ -1382,9 +1432,14 @@
             activeToastCount = 0;
         };
 
-        const showToast = (message) => {
+        const showToast = (message, options = {}) => {
             const toastMessage = String(message || '');
             if (!toastMessage) return;
+            if (options.scope === 'overlay' && hasBlockingOverlayOpen()) {
+                if (renderToastMessage(toastMessage, { scope: 'overlay' })) {
+                    return;
+                }
+            }
             if (deferToastRendering) {
                 pendingToastMessages.push(toastMessage);
                 if (pendingToastMessages.length > 5) pendingToastMessages.shift();
@@ -5605,7 +5660,7 @@
             if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
             const text = String(name || '').trim();
             if (!text) {
-                showToast('LoRA 名称为空，无法复制');
+                showToast('LoRA 名称为空，无法复制', { scope: 'overlay' });
                 return;
             }
             try {
@@ -5622,10 +5677,19 @@
                     document.execCommand('copy');
                     document.body.removeChild(textarea);
                 }
-                showToast('LoRA 名称已复制');
+                showToast('LoRA 名称已复制', { scope: 'overlay' });
             } catch (error) {
-                showToast('复制失败，请手动复制');
+                showToast('复制失败，请手动复制', { scope: 'overlay' });
             }
+        };
+
+        window.copyComfyWorkflowJson = async () => {
+            if (!state.comfyWorkflowData) {
+                showToast('当前没有可复制的工作流', { scope: 'overlay' });
+                return;
+            }
+            const ok = await copyTextToClipboard(JSON.stringify(state.comfyWorkflowData, null, 2));
+            showToast(ok ? '工作流 JSON 已复制' : '复制失败，请手动复制', { scope: 'overlay' });
         };
         window.closeNoteViewer = () => updateState({ viewingNote: null });
         window.closeLoraViewer = () => updateState({ viewingLora: null });
@@ -7323,7 +7387,7 @@
                             <h2 class="text-xl font-bold text-slate-800 dark:text-white mb-1 flex items-center gap-3 pr-10"><i data-lucide="workflow" class="w-5 h-5 text-violet-500"></i>ComfyUI 工作流</h2>
                             <p class="text-xs text-slate-400 dark:text-slate-500 mb-4">从图片元数据中提取的完整工作流 JSON</p>
                             <div class="flex gap-2 mb-3">
-                                <button onclick="navigator.clipboard.writeText(JSON.stringify(state.comfyWorkflowData, null, 2));showToast('工作流 JSON 已复制')" class="btn-icon liquid-action px-3 py-1.5 rounded-xl text-xs font-bold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 border border-violet-200 dark:border-violet-800/50 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition-colors flex items-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>复制 JSON</button>
+                                <button onclick="copyComfyWorkflowJson()" class="btn-icon liquid-action px-3 py-1.5 rounded-xl text-xs font-bold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 border border-violet-200 dark:border-violet-800/50 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition-colors flex items-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>复制 JSON</button>
                             </div>
                             <div class="flex-1 min-h-0 overflow-auto custom-scrollbar bg-slate-50/80 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 p-4">
                                 <pre class="text-xs font-mono text-slate-700 dark:text-slate-300 whitespace-pre leading-relaxed">${escapedJson}</pre>

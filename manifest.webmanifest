@@ -1,0 +1,26 @@
+{
+  "id": "./artist%20manager.html",
+  "name": "AI画廊",
+  "short_name": "AI画廊",
+  "description": "AI 图像收藏与管理应用",
+  "lang": "zh-CN",
+  "start_url": "./artist%20manager.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#6366f1",
+  "icons": [
+    {
+      "src": "./pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
