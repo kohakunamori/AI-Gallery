@@ -1033,8 +1033,74 @@
         }
 
         @media (max-width: 430px) {
+            body.mobile-ui #app > header {
+                gap: 0.5rem;
+                padding: calc(0.62rem + env(safe-area-inset-top, 0px)) 0.62rem 0.62rem;
+            }
+            body.mobile-ui #app > header > div:last-child {
+                gap: 0.35rem;
+            }
+            body.mobile-ui #app > header > div:last-child > button {
+                padding: 0.52rem;
+                border-radius: 0.8rem;
+            }
+            body.mobile-ui #app > header > div:last-child > button i {
+                width: 1rem;
+                height: 1rem;
+            }
+            body.mobile-ui #app > header > div:last-child > button[onclick="openAddModal()"] {
+                padding: 0.52rem 0.62rem;
+            }
+            body.mobile-ui #app > header > div:last-child > button[onclick="openAddModal()"] span {
+                display: none;
+            }
+            body.mobile-ui #filters-container {
+                margin-bottom: 0.55rem;
+                padding: 0.22rem 0 0.25rem;
+                gap: 0.35rem;
+            }
+            body.mobile-ui #filters-container button {
+                padding: 0.4rem 0.62rem;
+                border-radius: 0.72rem;
+                font-size: 0.68rem;
+            }
             body.mobile-ui #cards-container {
                 grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+                gap: 0.5rem !important;
+            }
+            body.mobile-ui .artist-card {
+                border-radius: 1rem;
+            }
+            body.mobile-ui .artist-card .absolute.top-3.right-3 {
+                top: 0.45rem;
+                right: 0.45rem;
+                gap: 0.3rem;
+            }
+            body.mobile-ui .artist-card .absolute.top-3.right-3 button {
+                padding: 0.42rem;
+            }
+            body.mobile-ui .artist-card .absolute.top-3.right-3 button i {
+                width: 0.95rem;
+                height: 0.95rem;
+            }
+            body.mobile-ui .artist-card button[class*="absolute top-3 left-3"] {
+                top: 0.45rem;
+                left: 0.45rem;
+                padding: 0.42rem;
+            }
+            body.mobile-ui .artist-card button[class*="absolute top-3 left-3"] i {
+                width: 0.95rem;
+                height: 0.95rem;
+            }
+            body.mobile-ui .artist-card div[class*="p-4 absolute bottom-0 left-0 right-0"] {
+                padding: 0.55rem 0.6rem;
+            }
+            body.mobile-ui .artist-card div[class*="p-4 absolute bottom-0 left-0 right-0"] h3 {
+                font-size: 0.78rem;
+                line-height: 1.1rem;
+            }
+            body.mobile-ui .artist-card div[class*="p-4 absolute bottom-0 left-0 right-0"] .text-xs {
+                font-size: 0.66rem;
             }
         }
 
@@ -1076,7 +1142,7 @@
     <div id="app" class="w-full h-full transition-colors duration-300"></div>
     <div id="modal-container"></div>
     <div id="ai-settings-container"></div>
-    <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]" style="z-index: 2147483647;"></div>
+    <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[150]"></div>
     <div id="sync-corner-progress-container" class="fixed right-4 bottom-4 z-[95] w-[min(360px,calc(100vw-2rem))] pointer-events-none hidden">
         <div class="glass-card bg-white/92 dark:bg-slate-900/90 border border-white/70 dark:border-slate-700/70 rounded-2xl shadow-2xl px-4 py-3 pointer-events-auto">
             <div class="flex items-center justify-between text-xs mb-2">
@@ -1268,10 +1334,14 @@
             for (const url of trackedObjectUrls) revokeObjectUrlIfNeeded(url);
         });
 
-        const showToast = (message) => {
+        let deferToastRendering = false;
+        const pendingToastMessages = [];
+
+        const renderToastMessage = (message) => {
             const container = document.getElementById('toast-container');
             if (!container) return;
             const toastMessage = String(message || '');
+            if (!toastMessage) return;
             if (activeToastCount >= 3) {
                 const first = container.firstElementChild;
                 if (first) container.removeChild(first);
@@ -1295,6 +1365,32 @@
                     activeToastCount = Math.max(0, activeToastCount - 1);
                 }
             }, 2500);
+        };
+
+        const flushPendingToasts = () => {
+            if (deferToastRendering || !pendingToastMessages.length) return;
+            const queued = pendingToastMessages.splice(0, pendingToastMessages.length);
+            queued.forEach((message) => {
+                renderToastMessage(message);
+            });
+        };
+
+        const clearVisibleToasts = () => {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            container.innerHTML = '';
+            activeToastCount = 0;
+        };
+
+        const showToast = (message) => {
+            const toastMessage = String(message || '');
+            if (!toastMessage) return;
+            if (deferToastRendering) {
+                pendingToastMessages.push(toastMessage);
+                if (pendingToastMessages.length > 5) pendingToastMessages.shift();
+                return;
+            }
+            renderToastMessage(toastMessage);
         };
 
         const readImageAsBase64 = (file) => new Promise((resolve, reject) => {
@@ -3119,6 +3215,55 @@
             scheduleSyncProgressReset(2000);
         };
 
+        const getSyncProgressRenderState = () => {
+            const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
+            const toneClass = state.syncProgressStatus === 'error'
+                ? 'text-red-600 dark:text-red-300'
+                : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
+            return {
+                progressPercent,
+                toneClass,
+                labelText: state.syncProgressLabel || '同步处理中...'
+            };
+        };
+
+        const applySyncProgressElements = (labelEl, percentEl, fillEl, progressState = getSyncProgressRenderState()) => {
+            if (labelEl) {
+                labelEl.className = `font-semibold ${progressState.toneClass}`;
+                labelEl.textContent = progressState.labelText;
+            }
+            if (percentEl) {
+                percentEl.textContent = `${progressState.progressPercent}%`;
+            }
+            if (fillEl) {
+                fillEl.style.width = `${progressState.progressPercent}%`;
+            }
+        };
+
+        const hasBlockingOverlayOpen = () => !!(
+            state.isModalOpen
+            || state.isAISettingsOpen
+            || state.isSyncModalOpen
+            || state.syncConflictDialog
+            || state.previewImage
+            || state.viewingNote
+            || state.viewingLora
+            || state.tagSelector
+            || (state.isNodeTagPresetOpen && state.isModalOpen)
+            || (state.showComfyWorkflow && state.comfyWorkflowData)
+        );
+
+        const syncToastOverlayGate = () => {
+            deferToastRendering = hasBlockingOverlayOpen();
+            if (deferToastRendering) {
+                clearVisibleToasts();
+                return;
+            }
+            if (!deferToastRendering) {
+                flushPendingToasts();
+            }
+        };
+
         function updateSyncModalProgressUI() {
             const panel = document.getElementById('sync-modal-progress');
             if (!panel) return;
@@ -3126,25 +3271,10 @@
             panel.classList.toggle('hidden', !state.syncProgressVisible);
             if (!state.syncProgressVisible) return;
 
-            const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
-            const toneClass = state.syncProgressStatus === 'error'
-                ? 'text-red-600 dark:text-red-300'
-                : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
-
             const labelEl = document.getElementById('sync-modal-progress-label');
             const percentEl = document.getElementById('sync-modal-progress-percent');
             const fillEl = document.getElementById('sync-modal-progress-fill');
-
-            if (labelEl) {
-                labelEl.className = `font-semibold ${toneClass}`;
-                labelEl.textContent = state.syncProgressLabel || '同步处理中...';
-            }
-            if (percentEl) {
-                percentEl.textContent = `${progressPercent}%`;
-            }
-            if (fillEl) {
-                fillEl.style.width = `${progressPercent}%`;
-            }
+            applySyncProgressElements(labelEl, percentEl, fillEl);
         }
 
         const getGeneratorWindowMetrics = () => {
@@ -3348,9 +3478,13 @@
                         if (state.isSyncModalOpen) updateSyncModalProgressUI();
                     }
                     if (newState.previewImage !== undefined || newState.viewingNote !== undefined || newState.viewingLora !== undefined) renderModals();
-                    if (newState.syncConflictDialog !== undefined) renderModals();
+                    if (newState.syncConflictDialog !== undefined) {
+                        renderModals();
+                        renderSyncCornerProgress();
+                    }
                     if (newState.tagSelector !== undefined) renderModals();
                     if (newState.isNodeTagPresetOpen !== undefined || newState.nodeTagPresets !== undefined || newState.activeNodeTagPresetId !== undefined) renderModals();
+                    if (newState.showComfyWorkflow !== undefined || newState.comfyWorkflowData !== undefined) renderModals();
                     if (newState.displayConfig) {
                         renderArtistCards();
                         if (state.isAISettingsOpen) renderModals();
@@ -5620,14 +5754,8 @@
             showToast('已从预设节点提取数据');
         };
 
-        window.toggleComfyWorkflowViewer = () => {
-            state.showComfyWorkflow = !state.showComfyWorkflow;
-            renderModals();
-        };
-        window.closeComfyWorkflowViewer = () => {
-            state.showComfyWorkflow = false;
-            renderModals();
-        };
+        window.toggleComfyWorkflowViewer = () => updateState({ showComfyWorkflow: !state.showComfyWorkflow });
+        window.closeComfyWorkflowViewer = () => updateState({ showComfyWorkflow: false });
         window.saveAISettings = () => {
              const titleApiHost = (document.getElementById('ai-title-host-input')?.value || 'https://api.openai.com/v1').replace(/\/+$/, '');
              const titleApiKey = (document.getElementById('ai-title-key-input')?.value || '').trim();
@@ -6197,10 +6325,10 @@
             const percentEl = document.getElementById('sync-corner-progress-percent');
             const fillEl = document.getElementById('sync-corner-progress-fill');
             const isMobileUi = document.body.classList.contains('mobile-ui');
-            const conflictDialogOpen = !!state.syncConflictDialog;
+            const blockingOverlayOpen = hasBlockingOverlayOpen();
 
-            container.classList.toggle('hidden', !state.syncProgressVisible || conflictDialogOpen);
-            if (!state.syncProgressVisible || conflictDialogOpen) return;
+            container.classList.toggle('hidden', !state.syncProgressVisible || blockingOverlayOpen);
+            if (!state.syncProgressVisible || blockingOverlayOpen) return;
 
             if (isMobileUi) {
                 ['left', 'right', 'width', 'bottom'].forEach((prop) => {
@@ -6213,20 +6341,7 @@
                 container.style.bottom = '1rem';
             }
 
-            const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
-            const toneClass = state.syncProgressStatus === 'error'
-                ? 'text-red-600 dark:text-red-300'
-                : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
-            if (labelEl) {
-                labelEl.className = `font-semibold ${toneClass}`;
-                labelEl.textContent = state.syncProgressLabel || '同步处理中...';
-            }
-            if (percentEl) {
-                percentEl.textContent = `${progressPercent}%`;
-            }
-            if (fillEl) {
-                fillEl.style.width = `${progressPercent}%`;
-            }
+            applySyncProgressElements(labelEl, percentEl, fillEl);
         };
 
         const renderThemeMenu = () => {
@@ -6450,15 +6565,19 @@
             const loraViewerContainer = document.getElementById('lora-viewer-container');
             const nodeTagPresetContainer = document.getElementById('node-tag-preset-container');
 
+            syncToastOverlayGate();
+            if (hasBlockingOverlayOpen()) {
+                clearHoverDetail();
+            }
+
             if (state.isSyncModalOpen) {
                 const syncConfig = normalizeWebdavConfig(state.webdavConfig || {});
                 const s3Config = normalizeS3Config(state.s3Config || {});
                 const syncMethod = state.syncMethod === 's3' ? 's3' : 'webdav';
-                const syncProgressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
-                const syncProgressLabel = escapeHtml(state.syncProgressLabel || '同步处理中...');
-                const syncProgressToneClass = state.syncProgressStatus === 'error'
-                    ? 'text-red-600 dark:text-red-300'
-                    : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
+                const syncProgressState = getSyncProgressRenderState();
+                const syncProgressPercent = syncProgressState.progressPercent;
+                const syncProgressLabel = escapeHtml(syncProgressState.labelText);
+                const syncProgressToneClass = syncProgressState.toneClass;
                 const safeEndpoint = escapeHtml(syncConfig.endpoint || '');
                 const safeUsername = escapeHtml(syncConfig.username || '');
                 const safePassword = escapeHtml(syncConfig.password || '');
@@ -6728,7 +6847,7 @@
                 const rawText = String(state.viewingNote.note || '');
                 const safeText = escapeHtml(rawText);
                 noteViewerContainer.innerHTML = `
-                    <div class="fixed inset-0 z-[130] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" style="z-index: 2147483600;" onclick="closeNoteViewer()">
+                    <div class="fixed inset-0 z-[110] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" onclick="closeNoteViewer()">
                         <div class="glass-modal dark:bg-slate-900/95 rounded-[1.5rem] shadow-2xl p-5 relative z-10 w-full max-w-2xl border dark:border-slate-700 max-h-[85vh] overflow-hidden flex flex-col" onclick="event.stopPropagation()">
                             <button onclick="closeNoteViewer()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
                             <h2 class="text-lg md:text-xl font-bold text-slate-800 dark:text-white mb-4 pr-10">${noteTitle}</h2>
@@ -6744,7 +6863,7 @@
                 const loraTitle = escapeHtml(state.viewingLora.name || 'LoRA 详情');
                 const loraItems = Array.isArray(state.viewingLora.loraItems) ? state.viewingLora.loraItems : [];
                 loraViewerContainer.innerHTML = `
-                    <div class="fixed inset-0 z-[140] bg-black/60 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" style="z-index: 2147483640;" onclick="closeLoraViewer()">
+                    <div class="fixed inset-0 z-[115] bg-black/60 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" onclick="closeLoraViewer()">
                         <div class="glass-modal dark:bg-slate-900/95 rounded-[1.5rem] shadow-2xl p-0 relative z-10 w-full max-w-3xl border border-fuchsia-200/70 dark:border-fuchsia-800/50 max-h-[85vh] overflow-hidden flex flex-col" onclick="event.stopPropagation()">
                             <button onclick="closeLoraViewer()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
                             <div class="px-6 py-5 border-b border-fuchsia-200/70 dark:border-fuchsia-800/40 bg-gradient-to-r from-fuchsia-50/90 via-purple-50/70 to-white/80 dark:from-fuchsia-950/40 dark:via-purple-950/30 dark:to-slate-900/50">
@@ -7215,6 +7334,8 @@
                 comfyContainer.innerHTML = '';
             }
 
+            renderSyncCornerProgress();
+            syncToastOverlayGate();
             lucide.createIcons();
         };
 
