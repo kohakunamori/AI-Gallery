@@ -1017,10 +1017,21 @@
     <div id="app" class="w-full h-full transition-colors duration-300"></div>
     <div id="modal-container"></div>
     <div id="ai-settings-container"></div>
-    <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]"></div>
-    <div id="sync-corner-progress-container"></div>
+    <div id="toast-container" class="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100]" style="z-index: 2147483647;"></div>
+    <div id="sync-corner-progress-container" class="fixed right-4 bottom-4 z-[95] w-[min(360px,calc(100vw-2rem))] pointer-events-none hidden">
+        <div class="glass-card bg-white/92 dark:bg-slate-900/90 border border-white/70 dark:border-slate-700/70 rounded-2xl shadow-2xl px-4 py-3 pointer-events-auto">
+            <div class="flex items-center justify-between text-xs mb-2">
+                <span id="sync-corner-progress-label" class="font-semibold text-indigo-600 dark:text-indigo-300">同步处理中...</span>
+                <span id="sync-corner-progress-percent" class="font-mono text-slate-500 dark:text-slate-400">0%</span>
+            </div>
+            <div class="sync-progress-track">
+                <div id="sync-corner-progress-fill" class="sync-progress-fill" style="width: 0%;"></div>
+            </div>
+        </div>
+    </div>
     <div id="preview-modal-container"></div>
     <div id="sync-modal-container"></div>
+    <div id="sync-conflict-container"></div>
     <div id="hover-detail-container"></div>
     <div id="note-viewer-container"></div>
     <div id="lora-viewer-container"></div>
@@ -2881,6 +2892,9 @@
         let syncProgressResetTimer = null;
         let syncPressHoldTimer = null;
         let syncPressLongTriggered = false;
+        let lastSyncProgressUiUpdateAt = 0;
+        let lastSyncProgressSignature = '';
+        let syncConflictResolver = null;
         const SYNC_BUTTON_HOLD_MS = 720;
 
         const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -2996,6 +3010,8 @@
         };
         const beginSyncProgress = (label) => {
             clearSyncProgressResetTimer();
+            lastSyncProgressUiUpdateAt = 0;
+            lastSyncProgressSignature = '';
             updateState({
                 syncProgressVisible: true,
                 syncProgressPercent: 8,
@@ -3005,23 +3021,66 @@
         };
         const updateSyncProgress = (percent, label, status = 'running') => {
             clearSyncProgressResetTimer();
-            const nextPercent = clampNumber(Number(percent) || 0, 0, 100);
+            const currentPercent = clampNumber(Number(state.syncProgressPercent) || 0, 0, 100);
+            const rawNextPercent = clampNumber(Number(percent) || 0, 0, 100);
+            const nextPercent = status === 'running' ? Math.max(currentPercent, rawNextPercent) : rawNextPercent;
+            const nextLabel = String(label || state.syncProgressLabel || '同步处理中...');
+            const signature = `${status}|${nextPercent}|${nextLabel}`;
+
+            if (status === 'running') {
+                const now = Date.now();
+                if (signature === lastSyncProgressSignature) return;
+                if ((now - lastSyncProgressUiUpdateAt) < 90 && Math.abs(nextPercent - currentPercent) < 2) return;
+                lastSyncProgressUiUpdateAt = now;
+            }
+            lastSyncProgressSignature = signature;
+
             updateState({
                 syncProgressVisible: true,
                 syncProgressPercent: nextPercent,
-                syncProgressLabel: String(label || state.syncProgressLabel || '同步处理中...'),
+                syncProgressLabel: nextLabel,
                 syncProgressStatus: status
             });
         };
         const finishSyncProgress = (label) => {
             updateSyncProgress(100, label || '同步完成', 'success');
+            lastSyncProgressSignature = '';
             scheduleSyncProgressReset(1000);
         };
         const failSyncProgress = (label) => {
             const fallbackPercent = Math.max(8, Number(state.syncProgressPercent) || 0);
             updateSyncProgress(fallbackPercent, label || '同步失败', 'error');
+            lastSyncProgressSignature = '';
             scheduleSyncProgressReset(2000);
         };
+
+        function updateSyncModalProgressUI() {
+            const panel = document.getElementById('sync-modal-progress');
+            if (!panel) return;
+
+            panel.classList.toggle('hidden', !state.syncProgressVisible);
+            if (!state.syncProgressVisible) return;
+
+            const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
+            const toneClass = state.syncProgressStatus === 'error'
+                ? 'text-red-600 dark:text-red-300'
+                : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
+
+            const labelEl = document.getElementById('sync-modal-progress-label');
+            const percentEl = document.getElementById('sync-modal-progress-percent');
+            const fillEl = document.getElementById('sync-modal-progress-fill');
+
+            if (labelEl) {
+                labelEl.className = `font-semibold ${toneClass}`;
+                labelEl.textContent = state.syncProgressLabel || '同步处理中...';
+            }
+            if (percentEl) {
+                percentEl.textContent = `${progressPercent}%`;
+            }
+            if (fillEl) {
+                fillEl.style.width = `${progressPercent}%`;
+            }
+        }
 
         const getGeneratorWindowMetrics = () => {
             const isTablet = window.innerWidth <= 1024;
@@ -3198,6 +3257,19 @@
                         || newState.syncProgressPercent !== undefined
                         || newState.syncProgressLabel !== undefined
                         || newState.syncProgressStatus !== undefined;
+                    const onlySyncProgressPatch = syncProgressChanged
+                        && Object.keys(newState).every((key) =>
+                            key === 'syncProgressVisible'
+                            || key === 'syncProgressPercent'
+                            || key === 'syncProgressLabel'
+                            || key === 'syncProgressStatus'
+                        );
+
+                    if (onlySyncProgressPatch) {
+                        renderSyncCornerProgress();
+                        if (state.isSyncModalOpen) updateSyncModalProgressUI();
+                        return;
+                    }
                     if (newState.selectedArtists) {
                         renderArtistCards(); 
                         renderSelectionArea(); 
@@ -3208,9 +3280,10 @@
                     }
                     if (syncProgressChanged) {
                         renderSyncCornerProgress();
-                        if (state.isSyncModalOpen) renderModals();
+                        if (state.isSyncModalOpen) updateSyncModalProgressUI();
                     }
                     if (newState.previewImage !== undefined || newState.viewingNote !== undefined || newState.viewingLora !== undefined) renderModals();
+                    if (newState.syncConflictDialog !== undefined) renderModals();
                     if (newState.tagSelector !== undefined) renderModals();
                     if (newState.isNodeTagPresetOpen !== undefined || newState.nodeTagPresets !== undefined || newState.activeNodeTagPresetId !== undefined) renderModals();
                     if (newState.displayConfig) {
@@ -3878,9 +3951,15 @@
             const addedCount = Number(result?.addedCount || 0);
             const skippedInvalid = Number(result?.skippedInvalid || 0);
             const imagePersistFailed = Number(result?.imagePersistFailed || 0);
+            const overwrittenCount = Number(result?.overwrittenCount || 0);
+            const keptLocalCount = Number(result?.keptLocalCount || 0);
+            const removedLocalCount = Number(result?.removedLocalCount || 0);
             const settingsUpdated = !!result?.settingsUpdated;
             const syncConfigUpdated = !!result?.syncConfigUpdated;
             const extras = [
+                overwrittenCount > 0 ? `覆盖 ${overwrittenCount} 条` : '',
+                keptLocalCount > 0 ? `保留本地 ${keptLocalCount} 条` : '',
+                removedLocalCount > 0 ? `移除本地 ${removedLocalCount} 条` : '',
                 imagePersistFailed > 0 ? `图片落盘失败 ${imagePersistFailed} 条` : '',
                 settingsUpdated ? '设置已更新' : '',
                 syncConfigUpdated ? '同步配置已更新' : ''
@@ -3914,7 +3993,7 @@
         };
         const isUserCancelledError = (error) => {
             const msg = normalizeErrorMessage(error, '');
-            return msg === '已取消导入' || msg === '已取消操作';
+            return msg === '已取消导入' || msg === '已取消操作' || msg === '已取消覆盖同步' || msg === '已取消拉取';
         };
         const toastFailure = (prefix, error, options = {}) => {
             const { silentCancel = false, fallback = '未知错误' } = options || {};
@@ -4287,6 +4366,246 @@
             return { addedCount, skippedInvalid, imagePersistFailed, settingsUpdated, syncConfigUpdated };
         };
 
+        const getConflictCompareRows = (localArtist = {}, remoteArtist = {}) => {
+            const fields = [
+                ['name', '名称'],
+                ['category', '分类'],
+                ['danbooruCount', '热度'],
+                ['isFavorite', '收藏'],
+                ['isNSFW', 'NSFW'],
+                ['note', '备注'],
+                ['generatorType', '生成器'],
+                ['aiModel', '模型'],
+                ['styleTag', '风格'],
+                ['characterTag', '角色'],
+                ['clothingTag', '服装'],
+                ['cfgScale', 'CFG'],
+                ['seed', 'Seed'],
+                ['steps', 'Steps'],
+                ['sampler', 'Sampler'],
+                ['modelHash', 'ModelHash'],
+                ['loraWeights', 'LoRA']
+            ];
+            const rows = fields.map(([key, label]) => ({
+                label,
+                local: String(localArtist?.[key] ?? '').trim() || '—',
+                remote: String(remoteArtist?.[key] ?? '').trim() || '—'
+            })).filter((row) => row.local !== row.remote);
+
+            const localImage = !!String(localArtist?.imageUrl || '').trim();
+            const remoteImage = !!String(remoteArtist?.imageUrl || '').trim();
+            if (localImage !== remoteImage) {
+                rows.push({ label: '图片', local: localImage ? '有' : '无', remote: remoteImage ? '有' : '无' });
+            }
+            return rows;
+        };
+
+        const openSyncConflictDialog = (dialog) => new Promise((resolve) => {
+            if (syncConflictResolver) {
+                try { syncConflictResolver('cancel'); } catch (_) {}
+            }
+            syncConflictResolver = resolve;
+            updateState({ syncConflictDialog: dialog });
+        });
+
+        const resolveSyncConflictDialog = (decision) => {
+            const resolver = syncConflictResolver;
+            syncConflictResolver = null;
+            updateState({ syncConflictDialog: null });
+            if (typeof resolver === 'function') resolver(decision);
+        };
+
+        window.resolveSyncConflictDialog = (decision) => {
+            const allowed = ['remote', 'local', 'continue', 'cancel'];
+            resolveSyncConflictDialog(allowed.includes(String(decision || '')) ? String(decision) : 'cancel');
+        };
+        window.closeSyncConflictDialog = () => resolveSyncConflictDialog('cancel');
+
+        const overwriteImportResolvedPayload = async (resolved, options = {}) => {
+            const sourceLabel = String(options.sourceLabel || '远端备份').trim() || '远端备份';
+            const importList = normalizeArtistList(resolved.artists || []);
+            const localList = normalizeArtistList(state.liveArtists || []);
+
+            const normalizeTagKey = (tag) => String(tag || '').trim().toLowerCase();
+            const localByTag = new Map();
+            localList.forEach((artist) => {
+                const key = normalizeTagKey(artist.tag);
+                if (key && !localByTag.has(key)) localByTag.set(key, artist);
+            });
+
+            const remoteTagSet = new Set(importList.map((item) => normalizeTagKey(item.tag)).filter(Boolean));
+            const localOnlyCount = Array.from(localByTag.keys()).filter((key) => !remoteTagSet.has(key)).length;
+            if (localOnlyCount > 0) {
+                const removalDecision = await openSyncConflictDialog({
+                    type: 'removal',
+                    sourceLabel,
+                    localOnlyCount,
+                    localCount: localList.length,
+                    remoteCount: importList.length
+                });
+                if (removalDecision !== 'continue') throw new Error('已取消覆盖同步');
+            }
+
+            const nextArtists = [];
+            const importedCategories = new Set(normalizeCategoryList(resolved.categories));
+            let addedCount = 0;
+            let overwrittenCount = 0;
+            let keptLocalCount = 0;
+            let skippedInvalid = 0;
+            let imagePersistFailed = 0;
+
+            for (const item of importList) {
+                const tag = String(item?.tag || '').trim();
+                if (!tag) {
+                    skippedInvalid++;
+                    continue;
+                }
+
+                const tagKey = normalizeTagKey(tag);
+                const localExisting = localByTag.get(tagKey) || null;
+                const category = normalizeCategoryName(item.category);
+                if (category) importedCategories.add(category);
+
+                const remoteCandidate = normalizeArtistRecord({
+                    ...(localExisting || {}),
+                    id: localExisting?.id || (Date.now().toString() + Math.random().toString(36).substr(2, 9)),
+                    name: item.name || tag,
+                    tag,
+                    category,
+                    imageUrl: item.imageUrl || '',
+                    danbooruCount: parseInt(item.danbooruCount, 10) || 0,
+                    isFavorite: !!item.isFavorite,
+                    isNSFW: !!item.isNSFW,
+                    note: item.note || '',
+                    generatorType: normalizeGeneratorType(item.generatorType),
+                    aiModel: item.aiModel || '',
+                    styleTag: item.styleTag || '',
+                    characterTag: item.characterTag || '',
+                    clothingTag: item.clothingTag || '',
+                    cfgScale: item.cfgScale || '',
+                    seed: item.seed || '',
+                    steps: item.steps || '',
+                    sampler: item.sampler || '',
+                    modelHash: item.modelHash || '',
+                    loraWeights: item.loraWeights || '',
+                    createdAt: localExisting?.createdAt || item.createdAt || Date.now()
+                });
+
+                if (localExisting) {
+                    const diffRows = getConflictCompareRows(localExisting, remoteCandidate);
+                    if (diffRows.length) {
+                        const decision = await openSyncConflictDialog({
+                            type: 'compare',
+                            sourceLabel,
+                            index: overwrittenCount + keptLocalCount + 1,
+                            total: importList.length,
+                            tag,
+                            localArtist: normalizeArtistRecord(localExisting),
+                            remoteArtist: remoteCandidate,
+                            diffRows
+                        });
+                        if (decision === 'cancel') throw new Error('已取消覆盖同步');
+                        if (decision === 'local') {
+                            nextArtists.push(normalizeArtistRecord(localExisting));
+                            keptLocalCount++;
+                            continue;
+                        }
+                    }
+                }
+
+                if (remoteCandidate.imageUrl && String(remoteCandidate.imageUrl).startsWith('data:')) {
+                    try {
+                        await saveImageToIDB(remoteCandidate.id, remoteCandidate.imageUrl);
+                    } catch (_) {
+                        imagePersistFailed++;
+                    }
+                }
+
+                nextArtists.push(remoteCandidate);
+                if (localExisting) overwrittenCount++;
+                else addedCount++;
+            }
+
+            const mergedCategories = normalizeCategoryList([
+                ...state.categories,
+                ...Array.from(importedCategories),
+                ...buildKnownCategoriesFromArtists(nextArtists)
+            ]);
+            const nextActiveCategory = resolveNextActiveCategory(state.activeCategory, mergedCategories);
+
+            const nextStatePatch = {
+                liveArtists: nextArtists,
+                categories: mergedCategories,
+                activeCategory: nextActiveCategory
+            };
+
+            let settingsUpdated = false;
+            let syncConfigUpdated = false;
+            const settingsPatch = resolved?.settingsPatch;
+            if (settingsPatch && typeof settingsPatch === 'object') {
+                if (settingsPatch.theme && Object.hasOwn(themes, settingsPatch.theme)) {
+                    nextStatePatch.theme = settingsPatch.theme;
+                    settingsUpdated = true;
+                }
+                if (settingsPatch.aiConfig === null) {
+                    nextStatePatch.aiConfig = normalizeAiConfig({});
+                    settingsUpdated = true;
+                } else if (settingsPatch.aiConfig && typeof settingsPatch.aiConfig === 'object') {
+                    nextStatePatch.aiConfig = normalizeAiConfig({ ...(state.aiConfig || {}), ...settingsPatch.aiConfig });
+                    settingsUpdated = true;
+                }
+                if (settingsPatch.displayConfig === null) {
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({ backgroundImage: '' });
+                    settingsUpdated = true;
+                } else if (settingsPatch.displayConfig && typeof settingsPatch.displayConfig === 'object') {
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({ ...(state.displayConfig || {}), ...settingsPatch.displayConfig });
+                    settingsUpdated = true;
+                }
+                if (Array.isArray(settingsPatch.nodeTagPresets)) {
+                    const normalizedPresets = normalizeNodeTagPresetList(settingsPatch.nodeTagPresets);
+                    nextStatePatch.nodeTagPresets = normalizedPresets;
+                    const rawActive = String(settingsPatch.activeNodeTagPresetId || '').trim();
+                    nextStatePatch.activeNodeTagPresetId = normalizedPresets.find((p) => p.id === rawActive)?.id || normalizedPresets[0]?.id || '';
+                    settingsUpdated = true;
+                } else if (settingsPatch.activeNodeTagPresetId !== undefined) {
+                    const rawActive = String(settingsPatch.activeNodeTagPresetId || '').trim();
+                    const basePresets = normalizeNodeTagPresetList(nextStatePatch.nodeTagPresets || state.nodeTagPresets || []);
+                    nextStatePatch.activeNodeTagPresetId = basePresets.find((p) => p.id === rawActive)?.id || basePresets[0]?.id || '';
+                    settingsUpdated = true;
+                }
+            }
+
+            const syncConfigPatch = resolved?.syncConfigPatch;
+            if (syncConfigPatch && typeof syncConfigPatch === 'object') {
+                if (syncConfigPatch.syncMethod !== undefined) {
+                    nextStatePatch.syncMethod = syncConfigPatch.syncMethod === 's3' ? 's3' : 'webdav';
+                }
+                if (syncConfigPatch.webdavConfig === null) {
+                    nextStatePatch.webdavConfig = getDefaultWebdavConfig();
+                } else if (syncConfigPatch.webdavConfig && typeof syncConfigPatch.webdavConfig === 'object') {
+                    nextStatePatch.webdavConfig = normalizeWebdavConfig({ ...(state.webdavConfig || {}), ...syncConfigPatch.webdavConfig });
+                }
+                if (syncConfigPatch.s3Config === null) {
+                    nextStatePatch.s3Config = getDefaultS3Config();
+                } else if (syncConfigPatch.s3Config && typeof syncConfigPatch.s3Config === 'object') {
+                    nextStatePatch.s3Config = normalizeS3Config({ ...(state.s3Config || {}), ...syncConfigPatch.s3Config });
+                }
+                syncConfigUpdated = true;
+            }
+
+            updateState(nextStatePatch);
+            return {
+                addedCount,
+                overwrittenCount,
+                keptLocalCount,
+                removedLocalCount: localOnlyCount,
+                skippedInvalid,
+                imagePersistFailed,
+                settingsUpdated,
+                syncConfigUpdated
+            };
+        };
+
         const encodeBasicAuth = (username, password) => {
             const raw = `${String(username || '')}:${String(password || '')}`;
             return btoa(unescape(encodeURIComponent(raw)));
@@ -4431,10 +4750,20 @@
             return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
         };
 
-        const buildTransferProgress = (event) => {
+        const estimateProgressFromLoadedBytes = (loadedBytes, minPercent = 12, maxPercent = 62) => {
+            const loaded = Math.max(0, Number(loadedBytes) || 0);
+            if (loaded <= 0) return minPercent;
+            const mb = loaded / (1024 * 1024);
+            const smooth = Math.log10(1 + mb * 9) / Math.log10(1 + 1024 * 9);
+            return clampNumber(Math.round(minPercent + smooth * (maxPercent - minPercent)), minPercent, maxPercent);
+        };
+
+        const buildTransferProgress = (event, totalHint = 0) => {
             const loaded = Math.max(0, Number(event?.loaded) || 0);
-            const total = Math.max(0, Number(event?.total) || 0);
-            const hasTotal = !!event?.lengthComputable && total > 0;
+            const eventTotal = Math.max(0, Number(event?.total) || 0);
+            const hintedTotal = Math.max(0, Number(totalHint) || 0);
+            const total = (event?.lengthComputable && eventTotal > 0) ? eventTotal : hintedTotal;
+            const hasTotal = total > 0;
             const percent = hasTotal ? clampNumber(Math.round((loaded / total) * 100), 0, 100) : null;
             return { loaded, total: hasTotal ? total : 0, hasTotal, percent };
         };
@@ -4462,7 +4791,13 @@
 
                 if (typeof onDownloadProgress === 'function') {
                     xhr.onprogress = (event) => {
-                        onDownloadProgress(buildTransferProgress(event));
+                        let totalHint = 0;
+                        if (!event?.lengthComputable) {
+                            const headerVal = xhr.getResponseHeader('Content-Length') || xhr.getResponseHeader('content-length') || '';
+                            const parsed = Number(headerVal);
+                            if (Number.isFinite(parsed) && parsed > 0) totalHint = parsed;
+                        }
+                        onDownloadProgress(buildTransferProgress(event, totalHint));
                     };
                 }
 
@@ -4779,11 +5114,18 @@
                 beginSyncProgress(`准备从 ${channel} 拉取...`);
                 const downloadProgressHandler = (progress) => {
                     if (progress?.hasTotal && Number.isFinite(progress.percent)) {
-                        const progressPercent = clampNumber(Math.round(12 + (progress.percent * 0.5)), 12, 62);
-                        updateSyncProgress(progressPercent, `正在从 ${channel} 拉取... ${progress.percent}%`);
+                        const progressPercent = clampNumber(Math.round(10 + (progress.percent * 0.78)), 10, 88);
+                        const downloadLabel = channel === 'S3'
+                            ? `正在从 ${channel} 拉取...`
+                            : `正在从 ${channel} 拉取... ${progress.percent}%`;
+                        updateSyncProgress(progressPercent, downloadLabel);
                     } else {
                         const loadedText = formatTransferSize(progress?.loaded || 0);
-                        updateSyncProgress(18, `正在从 ${channel} 拉取... 已接收 ${loadedText}`);
+                        const estimatedPercent = estimateProgressFromLoadedBytes(progress?.loaded || 0, 12, 58);
+                        const downloadLabel = channel === 'S3'
+                            ? `正在从 ${channel} 拉取...`
+                            : `正在从 ${channel} 拉取... 已接收 ${loadedText}`;
+                        updateSyncProgress(estimatedPercent, downloadLabel);
                     }
                 };
                 const rawJson = draft.syncMethod === 's3'
@@ -4792,17 +5134,18 @@
                 updateSyncProgress(55, '数据拉取成功，正在解析...');
                 ensureImportMetadataSafe(rawJson);
                 const resolved = resolveImportPayload(rawJson);
-                const accepted = confirmImportMergeIfDiff(resolved, `${channel} 备份`);
-                if (!accepted) {
-                    finishSyncProgress('已取消合并');
-                    return;
-                }
-                updateSyncProgress(74, '解析完成，正在合并本地数据...');
-                await runResolvedImportMerge(resolved, `从 ${channel} 同步`);
+                updateSyncProgress(74, '解析完成，正在按远端覆盖本地...');
+                const overwriteResult = await overwriteImportResolvedPayload(resolved, { sourceLabel: `${channel} 备份` });
+                showToast(buildMergeSummary(`从 ${channel} 拉取（覆盖模式）`, overwriteResult));
                 updateSyncProgress(95, '合并完成，正在收尾...');
                 finishSyncProgress(`从 ${channel} 拉取完成`);
             } catch (error) {
                 console.error('Sync download failed', error);
+                if (isUserCancelledError(error)) {
+                    finishSyncProgress('已取消拉取');
+                    showToast('已取消拉取');
+                    return;
+                }
                 const message = normalizeErrorMessage(error, '网络错误');
                 failSyncProgress(`拉取失败: ${message}`);
                 showToast(`拉取失败: ${message}`);
@@ -4820,12 +5163,8 @@
                     const rawJson = parseJsonOrThrow(rawText, '导入文件');
                     ensureImportMetadataSafe(rawJson);
                     const resolved = resolveImportPayload(rawJson);
-                    const accepted = confirmImportMergeIfDiff(resolved, '导入备份');
-                    if (!accepted) {
-                        showToast('已取消导入');
-                        return;
-                    }
-                    await runResolvedImportMerge(resolved, '导入完成');
+                    const overwriteResult = await overwriteImportResolvedPayload(resolved, { sourceLabel: '导入备份' });
+                    showToast(buildMergeSummary('导入本地备份（覆盖模式）', overwriteResult));
                 } catch (err) {
                     toastFailure('导入失败', err, { silentCancel: true, fallback: '格式错误' });
                 }
@@ -5790,37 +6129,17 @@
         const renderSyncCornerProgress = () => {
             const container = document.getElementById('sync-corner-progress-container');
             if (!container) return;
-            if (!state.syncProgressVisible) {
-                container.innerHTML = '';
-                return;
-            }
+            const labelEl = document.getElementById('sync-corner-progress-label');
+            const percentEl = document.getElementById('sync-corner-progress-percent');
+            const fillEl = document.getElementById('sync-corner-progress-fill');
+
+            container.classList.toggle('hidden', !state.syncProgressVisible);
+            if (!state.syncProgressVisible) return;
 
             const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
-            const progressLabel = escapeHtml(state.syncProgressLabel || '同步处理中...');
             const toneClass = state.syncProgressStatus === 'error'
                 ? 'text-red-600 dark:text-red-300'
                 : (state.syncProgressStatus === 'success' ? 'text-emerald-600 dark:text-emerald-300' : 'text-indigo-600 dark:text-indigo-300');
-
-            let root = container.querySelector('[data-sync-corner-root]');
-            if (!root) {
-                container.innerHTML = `
-                    <div data-sync-corner-root class="fixed right-4 bottom-4 z-[95] w-[min(360px,calc(100vw-2rem))] animate-fade-in pointer-events-none">
-                        <div class="glass-card bg-white/92 dark:bg-slate-900/90 border border-white/70 dark:border-slate-700/70 rounded-2xl shadow-2xl px-4 py-3 pointer-events-auto">
-                            <div class="flex items-center justify-between text-xs mb-2">
-                                <span data-sync-corner-label class="font-semibold text-indigo-600 dark:text-indigo-300"></span>
-                                <span data-sync-corner-percent class="font-mono text-slate-500 dark:text-slate-400"></span>
-                            </div>
-                            <div class="sync-progress-track">
-                                <div data-sync-corner-fill class="sync-progress-fill" style="width: 0%;"></div>
-                            </div>
-                        </div>
-                    </div>`;
-                root = container.querySelector('[data-sync-corner-root]');
-            }
-
-            const labelEl = container.querySelector('[data-sync-corner-label]');
-            const percentEl = container.querySelector('[data-sync-corner-percent]');
-            const fillEl = container.querySelector('[data-sync-corner-fill]');
             if (labelEl) {
                 labelEl.className = `font-semibold ${toneClass}`;
                 labelEl.textContent = state.syncProgressLabel || '同步处理中...';
@@ -6054,6 +6373,7 @@
             const container = document.getElementById('modal-container');
             const aiContainer = document.getElementById('ai-settings-container');
             const syncContainer = document.getElementById('sync-modal-container');
+            const syncConflictContainer = document.getElementById('sync-conflict-container');
             const previewContainer = document.getElementById('preview-modal-container');
             const noteViewerContainer = document.getElementById('note-viewer-container');
             const loraViewerContainer = document.getElementById('lora-viewer-container');
@@ -6187,19 +6507,18 @@
                                         <i data-lucide="upload" class="w-4 h-4"></i>${syncMethod === 's3' ? '手动同步到 S3' : '手动同步到 WebDAV'}
                                     </button>
                                     <button onclick="manualSyncDownload()" class="btn-icon liquid-action w-full py-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold hover:border-indigo-300 dark:hover:border-indigo-700 transition-all flex items-center justify-center gap-2">
-                                        <i data-lucide="download" class="w-4 h-4"></i>${syncMethod === 's3' ? '从 S3 拉取并合并' : '从 WebDAV 拉取并合并'}
+                                        <i data-lucide="download" class="w-4 h-4"></i>${syncMethod === 's3' ? '从 S3 拉取并覆盖' : '从 WebDAV 拉取并覆盖'}
                                     </button>
                                 </div>
-                                ${state.syncProgressVisible ? `
-                                <div class="rounded-xl bg-white/70 dark:bg-slate-900/55 border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+                                <div id="sync-modal-progress" class="rounded-xl bg-white/70 dark:bg-slate-900/55 border border-slate-200 dark:border-slate-700 p-3 space-y-2 ${state.syncProgressVisible ? '' : 'hidden'}">
                                     <div class="flex items-center justify-between text-xs">
-                                        <span class="font-semibold ${syncProgressToneClass}">${syncProgressLabel}</span>
-                                        <span class="text-slate-500 dark:text-slate-400 font-mono">${syncProgressPercent}%</span>
+                                        <span id="sync-modal-progress-label" class="font-semibold ${syncProgressToneClass}">${syncProgressLabel}</span>
+                                        <span id="sync-modal-progress-percent" class="text-slate-500 dark:text-slate-400 font-mono">${syncProgressPercent}%</span>
                                     </div>
                                     <div class="sync-progress-track">
-                                        <div class="sync-progress-fill" style="width: ${syncProgressPercent}%;"></div>
+                                        <div id="sync-modal-progress-fill" class="sync-progress-fill" style="width: ${syncProgressPercent}%;"></div>
                                     </div>
-                                </div>` : ''}
+                                </div>
                                 <div class="rounded-xl bg-indigo-50/80 dark:bg-indigo-900/25 border border-indigo-100 dark:border-indigo-800/50 px-3 py-2.5 text-[11px] text-indigo-700 dark:text-indigo-200 leading-relaxed">
                                     <p class="font-semibold mb-1">同步范围说明</p>
                                     <p>上传/拉取会处理：画师数据、设置、节点预设、同步配置与背景图资产。浏览器直连远程存储需服务端允许 CORS，建议使用应用专用密钥。</p>
@@ -6213,8 +6532,124 @@
                         </div>
                     </div>`;
                 lucide.createIcons(syncContainer);
+                updateSyncModalProgressUI();
             } else {
                 syncContainer.innerHTML = '';
+            }
+
+            if (syncConflictContainer && state.syncConflictDialog) {
+                const dialog = state.syncConflictDialog;
+                if (dialog.type === 'removal') {
+                    const safeSourceLabel = escapeHtml(dialog.sourceLabel || '远端备份');
+                    const localOnlyCount = Math.max(0, Number(dialog.localOnlyCount) || 0);
+                    const localCount = Math.max(0, Number(dialog.localCount) || 0);
+                    const remoteCount = Math.max(0, Number(dialog.remoteCount) || 0);
+                    syncConflictContainer.innerHTML = `
+                        <div class="fixed inset-0 z-[125] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" onclick="closeSyncConflictDialog()">
+                            <div class="glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-0 relative z-10 w-full max-w-xl border border-amber-200/70 dark:border-amber-800/40 overflow-hidden" onclick="event.stopPropagation()">
+                                <div class="px-6 py-5 border-b border-amber-200/70 dark:border-amber-800/40 bg-gradient-to-r from-amber-50/95 via-orange-50/80 to-white/80 dark:from-amber-950/40 dark:via-orange-950/30 dark:to-slate-900/50">
+                                    <div class="flex items-start justify-between gap-3 pr-10">
+                                        <div>
+                                            <h2 class="text-lg md:text-xl font-bold text-slate-800 dark:text-white">覆盖同步确认</h2>
+                                            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">${safeSourceLabel} 会覆盖本地，并删除 ${safeSourceLabel} 中不存在的本地条目。</p>
+                                        </div>
+                                        <div class="inline-flex items-center gap-1 rounded-full border border-amber-200 dark:border-amber-700/50 bg-white/75 dark:bg-slate-800/75 px-3 py-1 text-xs font-semibold text-amber-700 dark:text-amber-300">需确认</div>
+                                    </div>
+                                </div>
+                                <button onclick="closeSyncConflictDialog()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                                <div class="p-6 space-y-4">
+                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                        <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/65 p-4"><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">本地条目</div><div class="mt-2 text-2xl font-bold text-slate-800 dark:text-white">${localCount}</div></div>
+                                        <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/65 p-4"><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">远端条目</div><div class="mt-2 text-2xl font-bold text-slate-800 dark:text-white">${remoteCount}</div></div>
+                                        <div class="rounded-2xl border border-rose-200 dark:border-rose-800/40 bg-rose-50/90 dark:bg-rose-900/20 p-4"><div class="text-[11px] uppercase tracking-wide text-rose-400 dark:text-rose-500">将被移除</div><div class="mt-2 text-2xl font-bold text-rose-600 dark:text-rose-300">${localOnlyCount}</div></div>
+                                    </div>
+                                    <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/45 p-4 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                                        若继续，远端存在的冲突条目将进入逐项对比选择；远端不存在的本地条目会被删除。
+                                    </div>
+                                </div>
+                                <div class="px-6 pb-6 flex flex-col sm:flex-row gap-3">
+                                    <button onclick="resolveSyncConflictDialog('cancel')" class="btn-icon liquid-action flex-1 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold">取消本次拉取</button>
+                                    <button onclick="resolveSyncConflictDialog('continue')" class="btn-icon liquid-action-tint flex-1 py-3 rounded-2xl bg-amber-500 text-white font-bold shadow-lg hover:bg-amber-400 transition-all">继续覆盖</button>
+                                </div>
+                            </div>
+                        </div>`;
+                } else if (dialog.type === 'compare') {
+                    const safeSourceLabel = escapeHtml(dialog.sourceLabel || '远端备份');
+                    const localArtist = normalizeArtistRecord(dialog.localArtist || {});
+                    const remoteArtist = normalizeArtistRecord(dialog.remoteArtist || {});
+                    const diffRows = Array.isArray(dialog.diffRows) ? dialog.diffRows : [];
+                    const safeTag = escapeHtml(dialog.tag || localArtist.tag || remoteArtist.tag || '未命名条目');
+                    const safeIndex = Math.max(1, Number(dialog.index) || 1);
+                    const safeTotal = Math.max(safeIndex, Number(dialog.total) || safeIndex);
+                    const renderCompareCard = (artist, tone) => {
+                        const noteText = escapeHtml(String(artist.note || '').trim() || '—');
+                        const loraText = escapeHtml(String(artist.loraWeights || '').trim() || '—');
+                        const tagText = escapeHtml(String(artist.tag || '').trim() || '—');
+                        const nameText = escapeHtml(String(artist.name || '').trim() || '—');
+                        const categoryText = escapeHtml(String(artist.category || '').trim() || '未分类');
+                        const modelText = escapeHtml(String(artist.aiModel || '').trim() || '—');
+                        const imageUrl = escapeHtml(String(artist.imageUrl || '').trim());
+                        const imageBlock = imageUrl
+                            ? `<img src="${imageUrl}" class="w-16 h-16 rounded-2xl object-cover border border-white/70 dark:border-slate-700 shadow-sm" />`
+                            : `<div class="w-16 h-16 rounded-2xl flex items-center justify-center border border-dashed border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500"><i data-lucide="image" class="w-5 h-5"></i></div>`;
+                        return `
+                            <div class="rounded-2xl border ${tone.border} ${tone.bg} p-4 space-y-3">
+                                <div class="flex items-start gap-3">
+                                    ${imageBlock}
+                                    <div class="min-w-0 flex-1">
+                                        <div class="text-[11px] uppercase tracking-wide ${tone.label}">${tone.title}</div>
+                                        <div class="mt-1 text-base font-bold text-slate-800 dark:text-white break-all">${nameText}</div>
+                                        <div class="mt-1 text-xs text-slate-500 dark:text-slate-400 break-all">${tagText}</div>
+                                    </div>
+                                </div>
+                                <div class="flex flex-wrap gap-2 text-[11px]">
+                                    <span class="inline-flex items-center px-2 py-1 rounded-full border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300">${categoryText}</span>
+                                    <span class="inline-flex items-center px-2 py-1 rounded-full border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300">${modelText}</span>
+                                </div>
+                                <div class="space-y-2 text-sm">
+                                    <div><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1">LoRA</div><div class="rounded-xl bg-white/70 dark:bg-slate-900/55 border border-slate-200 dark:border-slate-700 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${loraText}</div></div>
+                                    <div><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1">备注</div><div class="rounded-xl bg-white/70 dark:bg-slate-900/55 border border-slate-200 dark:border-slate-700 px-3 py-2 text-slate-700 dark:text-slate-200 whitespace-pre-wrap break-words max-h-28 overflow-y-auto custom-scrollbar">${noteText}</div></div>
+                                </div>
+                            </div>`;
+                    };
+
+                    syncConflictContainer.innerHTML = `
+                        <div class="fixed inset-0 z-[125] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" onclick="closeSyncConflictDialog()">
+                            <div class="glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-0 relative z-10 w-full max-w-6xl border border-indigo-200/70 dark:border-indigo-800/40 overflow-hidden max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
+                                <button onclick="closeSyncConflictDialog()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
+                                <div class="px-6 py-5 border-b border-indigo-200/70 dark:border-indigo-800/40 bg-gradient-to-r from-indigo-50/90 via-sky-50/70 to-white/80 dark:from-indigo-950/40 dark:via-sky-950/25 dark:to-slate-900/50">
+                                    <div class="flex flex-wrap items-start justify-between gap-3 pr-10">
+                                        <div>
+                                            <div class="text-[11px] uppercase tracking-wide text-indigo-500 dark:text-indigo-300">同步冲突处理</div>
+                                            <h2 class="mt-1 text-lg md:text-xl font-bold text-slate-800 dark:text-white break-all">${safeTag}</h2>
+                                            <p class="mt-1 text-sm text-slate-600 dark:text-slate-300">第 ${safeIndex} / ${safeTotal} 项冲突，请选择保留本地版本或使用 ${safeSourceLabel} 覆盖。</p>
+                                        </div>
+                                        <div class="inline-flex items-center px-3 py-1 rounded-full border border-indigo-200 dark:border-indigo-700/50 bg-white/75 dark:bg-slate-800/75 text-xs font-semibold text-indigo-700 dark:text-indigo-300">左右对比后再选择</div>
+                                    </div>
+                                </div>
+                                <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6 space-y-5 bg-slate-50/70 dark:bg-slate-900/35">
+                                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                        ${renderCompareCard(localArtist, { title: '本地版本', border: 'border-amber-200 dark:border-amber-800/40', bg: 'bg-amber-50/80 dark:bg-amber-900/15', label: 'text-amber-600 dark:text-amber-300' })}
+                                        ${renderCompareCard(remoteArtist, { title: '远端版本', border: 'border-emerald-200 dark:border-emerald-800/40', bg: 'bg-emerald-50/80 dark:bg-emerald-900/15', label: 'text-emerald-600 dark:text-emerald-300' })}
+                                    </div>
+                                    <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/55 overflow-hidden">
+                                        <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700 text-sm font-bold text-slate-800 dark:text-white">差异字段</div>
+                                        <div class="divide-y divide-slate-200 dark:divide-slate-700">
+                                            ${diffRows.map((row) => `<div class="grid grid-cols-1 md:grid-cols-[120px_1fr_1fr] gap-3 px-4 py-3 text-sm"><div class="text-slate-500 dark:text-slate-400 font-semibold">${escapeHtml(row.label)}</div><div class="rounded-xl bg-amber-50/80 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/35 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${escapeHtml(row.local)}</div><div class="rounded-xl bg-emerald-50/80 dark:bg-emerald-900/15 border border-emerald-200 dark:border-emerald-800/35 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${escapeHtml(row.remote)}</div></div>`).join('')}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="px-6 py-5 border-t border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 flex flex-col lg:flex-row gap-3">
+                                    <button onclick="resolveSyncConflictDialog('cancel')" class="btn-icon liquid-action flex-1 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold">取消本次拉取</button>
+                                    <button onclick="resolveSyncConflictDialog('local')" class="btn-icon liquid-action flex-1 py-3 rounded-2xl border border-amber-200 dark:border-amber-800/40 bg-amber-50/85 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-bold">保留本地</button>
+                                    <button onclick="resolveSyncConflictDialog('remote')" class="btn-icon liquid-action-tint flex-1 py-3 rounded-2xl bg-emerald-600 text-white font-bold shadow-lg hover:bg-emerald-500 transition-all">使用远端覆盖</button>
+                                </div>
+                            </div>
+                        </div>`;
+                }
+                lucide.createIcons(syncConflictContainer);
+            } else if (syncConflictContainer) {
+                syncConflictContainer.innerHTML = '';
             }
 
             if (noteViewerContainer && state.viewingNote) {
