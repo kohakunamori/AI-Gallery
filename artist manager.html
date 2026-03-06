@@ -45,6 +45,11 @@
             --liquid-noise-opacity: 0.04;
             --liquid-tint-light: rgba(245, 245, 255, 0.12);
             --liquid-tint-dark: rgba(100, 120, 255, 0.06);
+            --mobile-shell-inset: 0.6rem;
+            --mobile-shell-bottom: 0.7rem;
+            --mobile-selection-panel-height: min(54dvh, 430px);
+            --mobile-selection-panel-max-height: calc(100dvh - 6.5rem - env(safe-area-inset-top, 0px));
+            --mobile-selection-panel-effective-height: min(var(--mobile-selection-panel-height), var(--mobile-selection-panel-max-height));
         }
 
         /* 核心布局：允许页面自然延展并由页面滚动 */
@@ -830,7 +835,7 @@
         body.mobile-ui #app > header {
             height: auto;
             min-height: 4.75rem;
-            padding: 0.75rem;
+            padding: calc(0.75rem + env(safe-area-inset-top, 0px)) 0.75rem 0.75rem;
             display: flex;
             flex-direction: column;
             align-items: stretch;
@@ -899,12 +904,12 @@
         }
         body.mobile-ui .app-layout {
             display: block;
-            padding: 0.55rem;
+            padding: 0.55rem 0.55rem calc(1rem + env(safe-area-inset-bottom, 0px));
             gap: 0.75rem;
         }
         body.mobile-ui .golden-ratio-main {
             min-width: 0;
-            padding: 0.75rem !important;
+            padding: 0.75rem 0.75rem calc(1rem + env(safe-area-inset-bottom, 0px)) !important;
         }
         body.mobile-ui #filters-container {
             margin-bottom: 0.75rem;
@@ -919,7 +924,10 @@
         body.mobile-ui #cards-container {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             gap: 0.62rem !important;
-            padding-bottom: 9.25rem;
+            padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+        }
+        body.mobile-ui.mobile-selection-active #cards-container {
+            padding-bottom: calc(var(--mobile-selection-panel-effective-height) + 6rem + env(safe-area-inset-bottom, 0px));
         }
         body.mobile-ui .artist-card .absolute.top-3.right-3 {
             transform: none !important;
@@ -936,17 +944,62 @@
         }
         body.mobile-ui .sidebar-container {
             display: flex !important;
-            left: 0.6rem;
-            right: 0.6rem;
+            left: var(--mobile-shell-inset);
+            right: var(--mobile-shell-inset);
             width: auto;
             top: auto;
-            bottom: 0.7rem;
-            height: min(54vh, 430px);
+            bottom: calc(var(--mobile-shell-bottom) + env(safe-area-inset-bottom, 0px));
+            height: var(--mobile-selection-panel-effective-height);
+            max-height: var(--mobile-selection-panel-max-height);
             z-index: 45;
             border-radius: 1.15rem;
         }
         body.mobile-ui .sidebar-container.hidden {
             display: none !important;
+        }
+        body.mobile-ui #sync-corner-progress-container {
+            left: var(--mobile-shell-inset);
+            right: var(--mobile-shell-inset);
+            width: auto;
+            bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+        }
+        body.mobile-ui.mobile-selection-active #sync-corner-progress-container {
+            bottom: calc(var(--mobile-selection-panel-effective-height) + 1.25rem + env(safe-area-inset-bottom, 0px));
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-shell {
+            width: calc(100vw - 0.9rem) !important;
+            max-height: calc(100vh - 0.9rem) !important;
+            border-radius: 1.2rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-header,
+        body.mobile-ui #sync-conflict-container .sync-conflict-body,
+        body.mobile-ui #sync-conflict-container .sync-conflict-footer {
+            padding-left: 0.95rem !important;
+            padding-right: 0.95rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-header {
+            padding-top: 0.95rem !important;
+            padding-bottom: 0.95rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-body {
+            padding-top: 0.95rem !important;
+            padding-bottom: 0.95rem !important;
+            gap: 0.9rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-footer {
+            padding-top: 0.95rem !important;
+            padding-bottom: 0.95rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-summary-grid,
+        body.mobile-ui #sync-conflict-container .sync-conflict-compare-grid {
+            gap: 0.75rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-card {
+            padding: 0.85rem !important;
+        }
+        body.mobile-ui #sync-conflict-container .sync-conflict-diff-row {
+            grid-template-columns: 1fr !important;
+            gap: 0.55rem !important;
         }
         body.mobile-ui .generator-drag-handle {
             cursor: default;
@@ -954,6 +1007,12 @@
         }
         body.mobile-ui .generator-drag-handle i[data-lucide="grip-horizontal"] {
             display: none;
+        }
+        body.mobile-ui .mobile-selection-list {
+            padding-bottom: 0.5rem;
+        }
+        body.mobile-ui .mobile-selection-footer {
+            padding-bottom: calc(1.2rem + env(safe-area-inset-bottom, 0px));
         }
 
         .sync-progress-track {
@@ -2897,6 +2956,12 @@
         let syncConflictResolver = null;
         const SYNC_BUTTON_HOLD_MS = 720;
 
+        const resetSidebarFloatingStyles = (container) => {
+            ['position', 'left', 'top', 'right', 'bottom', 'width', 'height', 'max-height', 'z-index'].forEach((prop) => {
+                container.style.removeProperty(prop);
+            });
+        };
+
         const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
         const formatLoraWeightItem = (entry = '') => {
             const raw = String(entry || '').trim();
@@ -3352,7 +3417,6 @@
             } else {
                 updateState({ displayConfig: { ...base, layoutPreset: 'custom' } });
             }
-            renderArtistCards();
         };
 
         window.updateLayoutCustom = (field, value) => {
@@ -6132,9 +6196,22 @@
             const labelEl = document.getElementById('sync-corner-progress-label');
             const percentEl = document.getElementById('sync-corner-progress-percent');
             const fillEl = document.getElementById('sync-corner-progress-fill');
+            const isMobileUi = document.body.classList.contains('mobile-ui');
+            const conflictDialogOpen = !!state.syncConflictDialog;
 
-            container.classList.toggle('hidden', !state.syncProgressVisible);
-            if (!state.syncProgressVisible) return;
+            container.classList.toggle('hidden', !state.syncProgressVisible || conflictDialogOpen);
+            if (!state.syncProgressVisible || conflictDialogOpen) return;
+
+            if (isMobileUi) {
+                ['left', 'right', 'width', 'bottom'].forEach((prop) => {
+                    container.style.removeProperty(prop);
+                });
+            } else {
+                container.style.left = '';
+                container.style.right = '1rem';
+                container.style.width = 'min(360px,calc(100vw-2rem))';
+                container.style.bottom = '1rem';
+            }
 
             const progressPercent = Math.round(clampNumber(Number(state.syncProgressPercent) || 0, 0, 100));
             const toneClass = state.syncProgressStatus === 'error'
@@ -6274,14 +6351,7 @@
         const applySidebarFollowLayout = (container) => {
             if (document.body.classList.contains('mobile-ui')) {
                 stopGeneratorDrag();
-                container.style.position = 'fixed';
-                container.style.left = '0.6rem';
-                container.style.right = '0.6rem';
-                container.style.width = 'auto';
-                container.style.top = 'auto';
-                container.style.bottom = '0.7rem';
-                container.style.height = 'min(54vh, 430px)';
-                container.style.zIndex = '45';
+                resetSidebarFloatingStyles(container);
                 return;
             }
             const metrics = getGeneratorWindowMetrics();
@@ -6308,9 +6378,7 @@
 
         const clearSidebarFollowLayout = (container) => {
             stopGeneratorDrag();
-            ['position', 'left', 'top', 'right', 'bottom', 'width', 'height', 'z-index'].forEach((prop) => {
-                container.style.removeProperty(prop);
-            });
+            resetSidebarFloatingStyles(container);
         };
 
         const renderSelectionArea = () => {
@@ -6318,18 +6386,20 @@
             if (!container) return;
             const list = getSelectedList();
             if (list.length < 2) {
+                document.body.classList.remove('mobile-selection-active');
                 container.innerHTML = '';
                 container.classList.add('hidden');
                 clearSidebarFollowLayout(container);
                 return;
             }
+            document.body.classList.toggle('mobile-selection-active', document.body.classList.contains('mobile-ui'));
             container.classList.remove('hidden');
             container.innerHTML = `
                 <div class="generator-drag-handle p-4 border-b border-white/20 dark:border-slate-700/50 flex items-center justify-between flex-shrink-0 select-none" onmousedown="startGeneratorDrag(event)" ontouchstart="startGeneratorDrag(event)">
                     <h2 class="font-bold text-lg text-slate-800 dark:text-white flex items-center gap-2.5"><i data-lucide="grip-horizontal" class="w-4 h-4 text-slate-400 dark:text-slate-500"></i><span>生成器</span></h2>
                     <span class="text-sm font-bold bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 px-3 py-1 rounded-full shadow-sm border border-indigo-100 dark:border-slate-600">${list.length}</span>
                 </div>
-                <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-3 custom-scrollbar">
+                <div class="mobile-selection-list flex-1 min-h-0 overflow-y-auto p-5 space-y-3 custom-scrollbar">
                     ${list.length === 0 ? `<div class="h-full flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 opacity-60"><i data-lucide="sparkles" class="w-12 h-12 mb-4"></i><p class="text-lg">点击左侧卡片</p><p class="text-sm">组合你的 Prompt</p></div>` : list.map(a => {
                         const escapedId = escapeJsSingleQuote(a.id);
                         const escapedName = escapeHtml(a.name);
@@ -6352,7 +6422,7 @@
                         </div>
                     `;}).join('')}
                 </div>
-                <div class="p-6 border-t border-white/20 dark:border-slate-700/50 flex-shrink-0 bg-white/30 dark:bg-slate-900/30">
+                <div class="mobile-selection-footer p-6 border-t border-white/20 dark:border-slate-700/50 flex-shrink-0 bg-white/30 dark:bg-slate-900/30">
                     <div class="bg-white/80 dark:bg-slate-800/80 border border-indigo-100 dark:border-slate-700 rounded-2xl p-4 mb-4 max-h-40 overflow-y-auto text-sm font-mono text-slate-700 dark:text-slate-300 break-words leading-relaxed shadow-inner custom-scrollbar">
                         ${list.map(a => {
                             const tagText = escapeHtml(a.tag || '');
@@ -6367,6 +6437,7 @@
             `;
             applySidebarFollowLayout(container);
             lucide.createIcons(container);
+            renderSyncCornerProgress();
         };
 
         const renderModals = () => {
@@ -6546,8 +6617,8 @@
                     const remoteCount = Math.max(0, Number(dialog.remoteCount) || 0);
                     syncConflictContainer.innerHTML = `
                         <div class="fixed inset-0 z-[125] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" onclick="closeSyncConflictDialog()">
-                            <div class="glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-0 relative z-10 w-full max-w-xl border border-amber-200/70 dark:border-amber-800/40 overflow-hidden" onclick="event.stopPropagation()">
-                                <div class="px-6 py-5 border-b border-amber-200/70 dark:border-amber-800/40 bg-gradient-to-r from-amber-50/95 via-orange-50/80 to-white/80 dark:from-amber-950/40 dark:via-orange-950/30 dark:to-slate-900/50">
+                            <div class="sync-conflict-shell glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-0 relative z-10 w-full max-w-xl border border-amber-200/70 dark:border-amber-800/40 overflow-hidden" onclick="event.stopPropagation()">
+                                <div class="sync-conflict-header px-6 py-5 border-b border-amber-200/70 dark:border-amber-800/40 bg-gradient-to-r from-amber-50/95 via-orange-50/80 to-white/80 dark:from-amber-950/40 dark:via-orange-950/30 dark:to-slate-900/50">
                                     <div class="flex items-start justify-between gap-3 pr-10">
                                         <div>
                                             <h2 class="text-lg md:text-xl font-bold text-slate-800 dark:text-white">覆盖同步确认</h2>
@@ -6557,17 +6628,17 @@
                                     </div>
                                 </div>
                                 <button onclick="closeSyncConflictDialog()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
-                                <div class="p-6 space-y-4">
-                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                        <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/65 p-4"><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">本地条目</div><div class="mt-2 text-2xl font-bold text-slate-800 dark:text-white">${localCount}</div></div>
-                                        <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/65 p-4"><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">远端条目</div><div class="mt-2 text-2xl font-bold text-slate-800 dark:text-white">${remoteCount}</div></div>
-                                        <div class="rounded-2xl border border-rose-200 dark:border-rose-800/40 bg-rose-50/90 dark:bg-rose-900/20 p-4"><div class="text-[11px] uppercase tracking-wide text-rose-400 dark:text-rose-500">将被移除</div><div class="mt-2 text-2xl font-bold text-rose-600 dark:text-rose-300">${localOnlyCount}</div></div>
+                                <div class="sync-conflict-body p-6 space-y-4">
+                                    <div class="sync-conflict-summary-grid grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                        <div class="sync-conflict-card rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/65 p-4"><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">本地条目</div><div class="mt-2 text-2xl font-bold text-slate-800 dark:text-white">${localCount}</div></div>
+                                        <div class="sync-conflict-card rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/65 p-4"><div class="text-[11px] uppercase tracking-wide text-slate-400 dark:text-slate-500">远端条目</div><div class="mt-2 text-2xl font-bold text-slate-800 dark:text-white">${remoteCount}</div></div>
+                                        <div class="sync-conflict-card rounded-2xl border border-rose-200 dark:border-rose-800/40 bg-rose-50/90 dark:bg-rose-900/20 p-4"><div class="text-[11px] uppercase tracking-wide text-rose-400 dark:text-rose-500">将被移除</div><div class="mt-2 text-2xl font-bold text-rose-600 dark:text-rose-300">${localOnlyCount}</div></div>
                                     </div>
                                     <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/45 p-4 text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
                                         若继续，远端存在的冲突条目将进入逐项对比选择；远端不存在的本地条目会被删除。
                                     </div>
                                 </div>
-                                <div class="px-6 pb-6 flex flex-col sm:flex-row gap-3">
+                                <div class="sync-conflict-footer px-6 pb-6 flex flex-col sm:flex-row gap-3">
                                     <button onclick="resolveSyncConflictDialog('cancel')" class="btn-icon liquid-action flex-1 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold">取消本次拉取</button>
                                     <button onclick="resolveSyncConflictDialog('continue')" class="btn-icon liquid-action-tint flex-1 py-3 rounded-2xl bg-amber-500 text-white font-bold shadow-lg hover:bg-amber-400 transition-all">继续覆盖</button>
                                 </div>
@@ -6615,9 +6686,9 @@
 
                     syncConflictContainer.innerHTML = `
                         <div class="fixed inset-0 z-[125] bg-black/55 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in" onclick="closeSyncConflictDialog()">
-                            <div class="glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-0 relative z-10 w-full max-w-6xl border border-indigo-200/70 dark:border-indigo-800/40 overflow-hidden max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
+                            <div class="sync-conflict-shell glass-modal dark:bg-slate-900/95 rounded-[1.75rem] shadow-2xl p-0 relative z-10 w-full max-w-6xl border border-indigo-200/70 dark:border-indigo-800/40 overflow-hidden max-h-[90vh] flex flex-col" onclick="event.stopPropagation()">
                                 <button onclick="closeSyncConflictDialog()" class="btn-icon liquid-action absolute top-4 right-4 p-2 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors z-10"><i data-lucide="x" class="w-5 h-5"></i></button>
-                                <div class="px-6 py-5 border-b border-indigo-200/70 dark:border-indigo-800/40 bg-gradient-to-r from-indigo-50/90 via-sky-50/70 to-white/80 dark:from-indigo-950/40 dark:via-sky-950/25 dark:to-slate-900/50">
+                                <div class="sync-conflict-header px-6 py-5 border-b border-indigo-200/70 dark:border-indigo-800/40 bg-gradient-to-r from-indigo-50/90 via-sky-50/70 to-white/80 dark:from-indigo-950/40 dark:via-sky-950/25 dark:to-slate-900/50">
                                     <div class="flex flex-wrap items-start justify-between gap-3 pr-10">
                                         <div>
                                             <div class="text-[11px] uppercase tracking-wide text-indigo-500 dark:text-indigo-300">同步冲突处理</div>
@@ -6627,19 +6698,19 @@
                                         <div class="inline-flex items-center px-3 py-1 rounded-full border border-indigo-200 dark:border-indigo-700/50 bg-white/75 dark:bg-slate-800/75 text-xs font-semibold text-indigo-700 dark:text-indigo-300">左右对比后再选择</div>
                                     </div>
                                 </div>
-                                <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6 space-y-5 bg-slate-50/70 dark:bg-slate-900/35">
-                                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                <div class="sync-conflict-body flex-1 min-h-0 overflow-y-auto custom-scrollbar p-6 space-y-5 bg-slate-50/70 dark:bg-slate-900/35">
+                                    <div class="sync-conflict-compare-grid grid grid-cols-1 xl:grid-cols-2 gap-4">
                                         ${renderCompareCard(localArtist, { title: '本地版本', border: 'border-amber-200 dark:border-amber-800/40', bg: 'bg-amber-50/80 dark:bg-amber-900/15', label: 'text-amber-600 dark:text-amber-300' })}
                                         ${renderCompareCard(remoteArtist, { title: '远端版本', border: 'border-emerald-200 dark:border-emerald-800/40', bg: 'bg-emerald-50/80 dark:bg-emerald-900/15', label: 'text-emerald-600 dark:text-emerald-300' })}
                                     </div>
                                     <div class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-800/55 overflow-hidden">
                                         <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700 text-sm font-bold text-slate-800 dark:text-white">差异字段</div>
                                         <div class="divide-y divide-slate-200 dark:divide-slate-700">
-                                            ${diffRows.map((row) => `<div class="grid grid-cols-1 md:grid-cols-[120px_1fr_1fr] gap-3 px-4 py-3 text-sm"><div class="text-slate-500 dark:text-slate-400 font-semibold">${escapeHtml(row.label)}</div><div class="rounded-xl bg-amber-50/80 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/35 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${escapeHtml(row.local)}</div><div class="rounded-xl bg-emerald-50/80 dark:bg-emerald-900/15 border border-emerald-200 dark:border-emerald-800/35 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${escapeHtml(row.remote)}</div></div>`).join('')}
+                                            ${diffRows.map((row) => `<div class="sync-conflict-diff-row grid grid-cols-1 md:grid-cols-[120px_1fr_1fr] gap-3 px-4 py-3 text-sm"><div class="text-slate-500 dark:text-slate-400 font-semibold">${escapeHtml(row.label)}</div><div class="rounded-xl bg-amber-50/80 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800/35 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${escapeHtml(row.local)}</div><div class="rounded-xl bg-emerald-50/80 dark:bg-emerald-900/15 border border-emerald-200 dark:border-emerald-800/35 px-3 py-2 text-slate-700 dark:text-slate-200 break-words">${escapeHtml(row.remote)}</div></div>`).join('')}
                                         </div>
                                     </div>
                                 </div>
-                                <div class="px-6 py-5 border-t border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 flex flex-col lg:flex-row gap-3">
+                                <div class="sync-conflict-footer px-6 py-5 border-t border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 flex flex-col lg:flex-row gap-3">
                                     <button onclick="resolveSyncConflictDialog('cancel')" class="btn-icon liquid-action flex-1 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold">取消本次拉取</button>
                                     <button onclick="resolveSyncConflictDialog('local')" class="btn-icon liquid-action flex-1 py-3 rounded-2xl border border-amber-200 dark:border-amber-800/40 bg-amber-50/85 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-bold">保留本地</button>
                                     <button onclick="resolveSyncConflictDialog('remote')" class="btn-icon liquid-action-tint flex-1 py-3 rounded-2xl bg-emerald-600 text-white font-bold shadow-lg hover:bg-emerald-500 transition-all">使用远端覆盖</button>
@@ -7151,8 +7222,7 @@
             const wasMobileUi = document.body.classList.contains('mobile-ui');
             const isMobileUi = applyAdaptiveInterfaceMode();
             if (wasMobileUi !== isMobileUi && !state.isDataLoading) {
-                renderSelectionArea();
-                renderModals();
+                renderApp();
             }
         };
 
