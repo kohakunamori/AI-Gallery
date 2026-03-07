@@ -109,8 +109,8 @@
 | 项目 | 说明 |
 |------|------|
 | HTML / CSS / JavaScript | 主应用，单文件运行 |
-| Tailwind CSS | 通过 CDN 引入，用于界面样式 |
-| Lucide Icons | 通过 CDN 引入，用于图标 |
+| Tailwind CSS | 本地生成的 `tailwind.generated.css` 静态样式文件，用于界面样式 |
+| Lucide Icons | 本地 `vendor/lucide.min.js` bundle，用于图标 |
 | IndexedDB | 存储本地图片 Blob |
 | LocalStorage | 存储条目元数据、分类和配置 |
 | Node.js `node:test` | 回归测试（导入导出、同步、工作流等） |
@@ -118,6 +118,8 @@
 ## 项目结构
 
 - `artist manager.html` - 主应用，绝大部分逻辑都在这里
+- `tailwind.generated.css` - 本地生成的 Tailwind 样式文件
+- `vendor/lucide.min.js` - 本地图标脚本 bundle
 - `README.md` - 项目说明
 - `tests/` - 回归测试，覆盖同步、导入导出、工作流下载、图片存储保护等能力
 
