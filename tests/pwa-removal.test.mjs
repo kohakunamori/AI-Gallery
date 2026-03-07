@@ -13,6 +13,10 @@ test('main page no longer includes PWA manifest or install metadata', () => {
   assert.doesNotMatch(html, /navigator\.serviceWorker\.register/i);
 });
 
+test('main page includes the modern mobile web app capable meta tag', () => {
+  assert.match(html, /<meta\s+name="mobile-web-app-capable"\s+content="yes"\s*\/?>/i);
+});
+
 test('repository no longer ships PWA runtime files', () => {
   assert.equal(fs.existsSync(new URL('../manifest.webmanifest', import.meta.url)), false);
   assert.equal(fs.existsSync(new URL('../service-worker.js', import.meta.url)), false);

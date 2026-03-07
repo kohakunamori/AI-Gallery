@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#6366f1">
     <title>AI画廊</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236366f1'/%3E%3Cstop offset='100%25' stop-color='%233b82f6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M14 45l12-14 8 8 10-12 6 18H14z' fill='white' fill-opacity='.92'/%3E%3Ccircle cx='23' cy='22' r='5' fill='white' fill-opacity='.95'/%3E%3C/svg%3E">
@@ -4199,6 +4200,14 @@
             webdavConfig: normalizeWebdavConfig(state.webdavConfig || {}),
             s3Config: normalizeS3Config(state.s3Config || {})
         });
+        const buildSyncConfigSnapshotFromDraft = (draft = null) => {
+            if (!draft || typeof draft !== 'object') return buildSyncConfigSnapshot();
+            return {
+                syncMethod: String(draft?.syncMethod || '').toLowerCase() === 's3' ? 's3' : 'webdav',
+                webdavConfig: normalizeWebdavConfig(draft?.webdavConfig || {}),
+                s3Config: normalizeS3Config(draft?.s3Config || {})
+            };
+        };
 
         const buildBackgroundImageFile = (displayConfigInput = state.displayConfig) => {
             const displayConfig = normalizeDisplayConfig(displayConfigInput || {});
@@ -4234,6 +4243,349 @@
                 nodeTagPresets: normalizedNodeTagPresets,
                 activeNodeTagPresetId: activePresetId
             };
+        };
+
+        const buildSplitSyncTargetLayout = (targetPath = '') => {
+            const normalized = String(targetPath || '').trim().replace(/^\/+/, '').replace(/\/+/g, '/');
+            const safePath = normalized || 'gallery.json';
+            const lastDotIndex = safePath.lastIndexOf('.');
+            const hasExtension = lastDotIndex > safePath.lastIndexOf('/');
+            const basePath = hasExtension ? safePath.slice(0, lastDotIndex) : safePath;
+            return {
+                metadataPath: `${basePath}.sync-meta.json`,
+                assetPrefix: `${basePath}.sync-assets/`
+            };
+        };
+
+        const buildSplitSyncArtistAssetBaseName = (artist = {}) => {
+            const raw = String(artist?.tag || artist?.id || 'artist').trim();
+            const normalized = typeof raw.normalize === 'function'
+                ? raw.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+                : raw;
+            const slug = String(normalized || 'artist')
+                .replace(/[^A-Za-z0-9._-]+/g, '_')
+                .replace(/_+/g, '_')
+                .replace(/^_+|_+$/g, '');
+            const compact = String(slug || '').slice(0, 48).replace(/^[-_.]+|[-_.]+$/g, '');
+            if (compact) return compact;
+            const encoded = encodeURIComponent(raw || 'artist')
+                .replace(/%/g, '_')
+                .replace(/[^A-Za-z0-9._-]+/g, '_')
+                .replace(/_+/g, '_')
+                .replace(/^_+|_+$/g, '');
+            return String(encoded || 'artist').slice(0, 48) || 'artist';
+        };
+
+        const buildSplitSyncMetadata = ({
+            exportVersion = EXPORT_VERSION,
+            artists = [],
+            categories = [],
+            settings = null,
+            syncConfig = null,
+            imageAssetMap = {},
+            backgroundAsset = null
+        } = {}) => {
+            const normalizedArtists = normalizeArtistList(artists).map((artist) => {
+                const assetRef = imageAssetMap?.[artist.id] || null;
+                if (!assetRef) return normalizeArtistRecord(artist);
+                return normalizeArtistRecord({
+                    ...artist,
+                    imageUrl: '',
+                    imageAsset: {
+                        assetPath: String(assetRef.assetPath || '').trim(),
+                        contentHash: String(assetRef.contentHash || '').trim(),
+                        mimeType: String(assetRef.mimeType || '').trim(),
+                        size: Math.max(0, Number(assetRef.size) || 0)
+                    }
+                });
+            });
+
+            const metadata = {
+                app: 'ai-gallery',
+                format: 'split-sync-assets',
+                assetManifestVersion: 1,
+                version: Number(exportVersion) || EXPORT_VERSION,
+                exportedAt: new Date().toISOString(),
+                itemCount: normalizedArtists.length,
+                categories: normalizeCategoryList(categories),
+                artists: normalizedArtists,
+                settings: settings && typeof settings === 'object' ? { ...settings } : null,
+                syncConfig: syncConfig && typeof syncConfig === 'object' ? { ...syncConfig } : null
+            };
+
+            if (backgroundAsset && metadata.settings && typeof metadata.settings === 'object') {
+                metadata.settings.backgroundImageAsset = {
+                    assetPath: String(backgroundAsset.assetPath || '').trim(),
+                    contentHash: String(backgroundAsset.contentHash || '').trim(),
+                    mimeType: String(backgroundAsset.mimeType || '').trim(),
+                    size: Math.max(0, Number(backgroundAsset.size) || 0)
+                };
+                if (metadata.settings.displayConfig && typeof metadata.settings.displayConfig === 'object') {
+                    metadata.settings.displayConfig = {
+                        ...metadata.settings.displayConfig,
+                        backgroundImage: ''
+                    };
+                }
+            }
+
+            return metadata;
+        };
+
+        const buildSplitAssetIndexFromMetadata = (metadata) => {
+            const out = {};
+            const artists = Array.isArray(metadata?.artists) ? metadata.artists : [];
+            for (const artist of artists) {
+                const asset = artist?.imageAsset;
+                const assetPath = String(asset?.assetPath || '').trim();
+                if (!assetPath) continue;
+                out[assetPath] = {
+                    assetPath,
+                    contentHash: String(asset?.contentHash || '').trim(),
+                    mimeType: String(asset?.mimeType || '').trim(),
+                    size: Math.max(0, Number(asset?.size) || 0)
+                };
+            }
+            const backgroundAsset = metadata?.settings?.backgroundImageAsset;
+            const backgroundPath = String(backgroundAsset?.assetPath || '').trim();
+            if (backgroundPath) {
+                out[backgroundPath] = {
+                    assetPath: backgroundPath,
+                    contentHash: String(backgroundAsset?.contentHash || '').trim(),
+                    mimeType: String(backgroundAsset?.mimeType || '').trim(),
+                    size: Math.max(0, Number(backgroundAsset?.size) || 0)
+                };
+            }
+            return out;
+        };
+
+        const computeSplitSyncMetadataHash = async (metadata) => {
+            const cloned = JSON.parse(JSON.stringify(metadata || {}));
+            delete cloned.exportedAt;
+            delete cloned.contentHash;
+            return sha256Hex(JSON.stringify(cloned));
+        };
+
+        const planIncrementalSyncUpload = async (bundle, remoteMetadata = null) => {
+            const remoteIndex = isSplitSyncMetadataPayload(remoteMetadata)
+                ? buildSplitAssetIndexFromMetadata(remoteMetadata)
+                : {};
+            const nextAssetEntries = (Array.isArray(bundle?.assetEntries) ? bundle.assetEntries : []).filter((entry) => {
+                const assetPath = String(entry?.assetPath || '').trim();
+                if (!assetPath) return false;
+                const remoteAsset = remoteIndex[assetPath];
+                if (!remoteAsset) return true;
+                return String(remoteAsset.contentHash || '').trim() !== String(entry?.contentHash || '').trim();
+            });
+            const remoteHash = String(remoteMetadata?.contentHash || '').trim();
+            const localHash = String(bundle?.metadata?.contentHash || '').trim();
+            return {
+                shouldUploadMetadata: !remoteHash || !localHash || remoteHash !== localHash,
+                assetEntries: nextAssetEntries
+            };
+        };
+
+        const buildSplitSyncUploadBundle = async ({
+            targetPath = '',
+            artists = [],
+            categories = [],
+            settings = null,
+            syncConfig = null
+        } = {}) => {
+            const layout = buildSplitSyncTargetLayout(targetPath);
+            const normalizedArtists = normalizeArtistList(artists);
+            const assetEntries = [];
+            const imageAssetMap = {};
+            const missingLocalAssetLabels = [];
+            const assetEntryIndex = new Map();
+
+            for (const artist of normalizedArtists) {
+                const normalizedId = String(artist?.id || '').trim();
+                if (!normalizedId || !isEmbeddedLocalImageUrl(artist?.imageUrl || '')) continue;
+                const blob = await getImageBlobFromIDB(normalizedId);
+                if (!(blob instanceof Blob)) {
+                    missingLocalAssetLabels.push(String(artist?.tag || artist?.name || normalizedId).trim() || normalizedId);
+                    continue;
+                }
+                const mimeType = String(blob.type || 'application/octet-stream').trim() || 'application/octet-stream';
+                const ext = String((mimeType.split('/')[1] || 'bin').split('+')[0] || 'bin').toLowerCase();
+                const contentHash = await sha256Hex(blob);
+                const assetBaseName = buildSplitSyncArtistAssetBaseName(artist);
+                const fullHash = String(contentHash || '').trim();
+                let hashLength = Math.min(12, fullHash.length || 12);
+                let assetHashSuffix = fullHash.slice(0, hashLength) || 'asset';
+                let assetPath = `${layout.assetPrefix}images/${assetBaseName}-${assetHashSuffix}.${ext}`;
+                let existingAsset = assetEntryIndex.get(assetPath) || null;
+                while (existingAsset && String(existingAsset.contentHash || '').trim() !== fullHash) {
+                    if (hashLength < fullHash.length) {
+                        hashLength = Math.min(fullHash.length, hashLength + 2);
+                        assetHashSuffix = fullHash.slice(0, hashLength) || 'asset';
+                    } else {
+                        assetHashSuffix = `${fullHash || 'asset'}-${assetEntries.length + 1}`;
+                    }
+                    assetPath = `${layout.assetPrefix}images/${assetBaseName}-${assetHashSuffix}.${ext}`;
+                    existingAsset = assetEntryIndex.get(assetPath) || null;
+                }
+                imageAssetMap[normalizedId] = { assetPath, mimeType, size: blob.size, contentHash };
+                if (!existingAsset) {
+                    const entry = { assetPath, blob, mimeType, contentHash };
+                    assetEntries.push(entry);
+                    assetEntryIndex.set(assetPath, entry);
+                }
+            }
+
+            if (missingLocalAssetLabels.length) {
+                const preview = missingLocalAssetLabels.slice(0, 3).join('、');
+                const suffix = missingLocalAssetLabels.length > 3 ? ' 等' : '';
+                throw new Error(`检测到 ${missingLocalAssetLabels.length} 张本地图片资源缺失，无法从当前浏览器读取后再同步：${preview}${suffix}`);
+            }
+
+            let backgroundAsset = null;
+            const backgroundDataUrl = String(settings?.displayConfig?.backgroundImage || '').trim();
+            if (backgroundDataUrl.startsWith('data:')) {
+                const blob = await dataUrlToBlob(backgroundDataUrl);
+                if (blob instanceof Blob) {
+                    const mimeType = String(blob.type || 'application/octet-stream').trim() || 'application/octet-stream';
+                    const ext = String((mimeType.split('/')[1] || 'bin').split('+')[0] || 'bin').toLowerCase();
+                    const assetPath = `${layout.assetPrefix}backgrounds/gallery-background.${ext}`;
+                    const contentHash = await sha256Hex(blob);
+                    backgroundAsset = { assetPath, mimeType, size: blob.size, contentHash };
+                    assetEntries.push({ assetPath, blob, mimeType, contentHash });
+                }
+            }
+
+            const metadata = buildSplitSyncMetadata({
+                exportVersion: EXPORT_VERSION,
+                artists: normalizedArtists,
+                categories,
+                settings,
+                syncConfig,
+                imageAssetMap,
+                backgroundAsset
+            });
+            metadata.contentHash = await computeSplitSyncMetadataHash(metadata);
+
+            return {
+                metadataPath: layout.metadataPath,
+                assetPrefix: layout.assetPrefix,
+                metadata,
+                assetEntries
+            };
+        };
+
+        const hydrateSplitResolvedPayloadAssets = async (resolved, fetchAssetBlob) => {
+            const assetLoader = typeof fetchAssetBlob === 'function' ? fetchAssetBlob : async () => null;
+            const hydratedArtists = [];
+            for (const artist of Array.isArray(resolved?.artists) ? resolved.artists : []) {
+                const nextArtist = { ...(artist || {}) };
+                const imageAsset = nextArtist?.imageAsset;
+                if (imageAsset && typeof imageAsset === 'object' && String(imageAsset.assetPath || '').trim()) {
+                    const loaded = await assetLoader(imageAsset);
+                    if (loaded instanceof Blob) {
+                        nextArtist.imageBlob = loaded;
+                    } else if (loaded && typeof loaded === 'object') {
+                        if (loaded.blob instanceof Blob) nextArtist.imageBlob = loaded.blob;
+                        if (loaded.preserveLocal) nextArtist.preserveLocalImageAsset = true;
+                    }
+                }
+                hydratedArtists.push(nextArtist);
+            }
+
+            const settingsPatch = resolved?.settingsPatch && typeof resolved.settingsPatch === 'object'
+                ? { ...resolved.settingsPatch }
+                : resolved?.settingsPatch;
+            const backgroundAsset = settingsPatch?.backgroundImageAsset;
+            if (backgroundAsset && typeof backgroundAsset === 'object' && String(backgroundAsset.assetPath || '').trim()) {
+                const loaded = await assetLoader(backgroundAsset);
+                if (loaded instanceof Blob) {
+                    settingsPatch.backgroundImageBlob = loaded;
+                } else if (loaded && typeof loaded === 'object') {
+                    if (loaded.blob instanceof Blob) settingsPatch.backgroundImageBlob = loaded.blob;
+                    if (loaded.preserveLocal) settingsPatch.preserveLocalBackgroundAsset = true;
+                }
+            }
+
+            return {
+                ...resolved,
+                artists: hydratedArtists,
+                settingsPatch
+            };
+        };
+
+        const fetchSplitAssetBlobForSyncDraft = async (draft, assetRef, onProgress = null) => {
+            const assetPath = String(assetRef?.assetPath || '').trim();
+            if (!assetPath) return null;
+            const assetBudget = getImportSizeSafetyBudget('同步资源');
+            if (draft?.syncMethod === 's3') {
+                const response = await downloadBlobFromS3(draft.s3Config, assetPath, onProgress, {
+                    maxDownloadBytes: assetBudget.hardBytes,
+                    responseLabel: 'S3 同步资源'
+                });
+                if (!response.ok) {
+                    throw buildStorageTextError('S3 同步资源拉取失败', response.status, await readBlobAsText(response.responseBlob));
+                }
+                return response.responseBlob || null;
+            }
+            const response = await downloadBlobFromWebdav(draft?.webdavConfig, assetPath, onProgress, {
+                maxDownloadBytes: assetBudget.hardBytes,
+                responseLabel: 'WebDAV 同步资源'
+            });
+            if (!response.ok) {
+                throw buildStorageTextError('WebDAV 同步资源拉取失败', response.status, await readBlobAsText(response.responseBlob));
+            }
+            return response.responseBlob || null;
+        };
+
+        const buildCurrentSplitSyncUploadBundleForDraft = async (draft) => {
+            const targetPath = draft?.syncMethod === 's3'
+                ? draft?.s3Config?.objectKey
+                : draft?.webdavConfig?.filePath;
+            return buildSplitSyncUploadBundle({
+                targetPath,
+                artists: state.liveArtists,
+                categories: state.categories,
+                settings: buildSettingsSnapshot(),
+                syncConfig: buildSyncConfigSnapshotFromDraft(draft)
+            });
+        };
+
+        const tryLoadRemoteSplitMetadataForWebdav = async (cfg) => {
+            const layout = buildSplitSyncTargetLayout(cfg?.filePath);
+            const response = await downloadBlobFromWebdav(cfg, layout.metadataPath, null, {
+                responseLabel: 'WebDAV 同步元数据'
+            });
+            if (!response.ok) {
+                if (Number(response.status) === 404) return null;
+                throw buildStorageTextError('WebDAV 同步元数据读取失败', response.status, await readBlobAsText(response.responseBlob));
+            }
+            const blob = response.responseBlob || null;
+            const rawJson = parseJsonOrThrow(await readBlobAsText(blob), 'WebDAV 同步元数据', Number(blob?.size || 0));
+            ensureImportMetadataSafe(rawJson);
+            return isSplitSyncMetadataPayload(rawJson) ? rawJson : null;
+        };
+
+        const tryLoadRemoteSplitMetadataForS3 = async (cfg) => {
+            const layout = buildSplitSyncTargetLayout(cfg?.objectKey);
+            const response = await downloadBlobFromS3(cfg, layout.metadataPath, null, {
+                responseLabel: 'S3 同步元数据'
+            });
+            if (!response.ok) {
+                const responseText = await readBlobAsText(response.responseBlob);
+                const isMissing = Number(response.status) === 404 || /NoSuchKey/i.test(responseText);
+                if (isMissing) return null;
+                throw buildStorageTextError('S3 同步元数据读取失败', response.status, responseText || '');
+            }
+            const blob = response.responseBlob || null;
+            const rawJson = parseJsonOrThrow(await readBlobAsText(blob), 'S3 同步元数据', Number(blob?.size || 0));
+            ensureImportMetadataSafe(rawJson);
+            return isSplitSyncMetadataPayload(rawJson) ? rawJson : null;
+        };
+
+        const isSplitSyncMetadataPayload = (rawJson) => {
+            return !!rawJson
+                && typeof rawJson === 'object'
+                && !Array.isArray(rawJson)
+                && String(rawJson.app || '').trim().toLowerCase() === 'ai-gallery'
+                && String(rawJson.format || '').trim().toLowerCase() === 'split-sync-assets';
         };
 
         const buildExportPayload = async () => {
@@ -4563,6 +4915,14 @@
                     || source?.backgroundImageDataUrl
                     || ''
                 ).trim();
+                const backgroundImageAsset = source?.backgroundImageAsset && typeof source.backgroundImageAsset === 'object'
+                    ? {
+                        assetPath: String(source.backgroundImageAsset.assetPath || '').trim(),
+                        contentHash: String(source.backgroundImageAsset.contentHash || '').trim(),
+                        mimeType: String(source.backgroundImageAsset.mimeType || '').trim(),
+                        size: Math.max(0, Number(source.backgroundImageAsset.size) || 0)
+                    }
+                    : null;
 
                 if (source.displayConfig !== undefined || source.display !== undefined || backgroundImageDataUrl) {
                     const displaySource = source.displayConfig !== undefined ? source.displayConfig : source.display;
@@ -4575,6 +4935,7 @@
                         out.displayConfig = displayPatch;
                     }
                 }
+                if (backgroundImageAsset?.assetPath) out.backgroundImageAsset = backgroundImageAsset;
 
                 if (source.nodeTagPresets !== undefined || source.comfyNodeTagPresets !== undefined) {
                     const normalizedPresets = normalizeNodeTagPresetList(source.nodeTagPresets || source.comfyNodeTagPresets || []);
@@ -4644,7 +5005,18 @@
                 if (currentTags.has(tag)) continue;
 
                 const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-                if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
+                if (item.preserveLocalImageAsset && String(item.imageUrl || '').trim()) {
+                    // Keep the locally cached asset when the remote manifest matches it.
+                } else if (item.imageBlob instanceof Blob) {
+                    try {
+                        await saveImageToIDB(id, item.imageBlob);
+                        item.imageUrl = registerObjectUrl(URL.createObjectURL(item.imageBlob));
+                    } catch (_) {
+                        skippedInvalid++;
+                        imagePersistFailed++;
+                        continue;
+                    }
+                } else if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
                     try {
                         item.imageUrl = await persistEmbeddedImageForState(id, item.imageUrl);
                     } catch (_) {
@@ -4720,6 +5092,21 @@
                     settingsUpdated = true;
                 } else if (settingsPatch.displayConfig && typeof settingsPatch.displayConfig === 'object') {
                     nextStatePatch.displayConfig = normalizeDisplayConfig({ ...(state.displayConfig || {}), ...settingsPatch.displayConfig });
+                    settingsUpdated = true;
+                }
+                if (settingsPatch.backgroundImageBlob instanceof Blob) {
+                    const baseDisplayConfig = normalizeDisplayConfig(nextStatePatch.displayConfig || state.displayConfig || {});
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({
+                        ...baseDisplayConfig,
+                        backgroundImage: await blobToDataUrl(settingsPatch.backgroundImageBlob)
+                    });
+                    settingsUpdated = true;
+                } else if (settingsPatch.preserveLocalBackgroundAsset) {
+                    const baseDisplayConfig = normalizeDisplayConfig(nextStatePatch.displayConfig || state.displayConfig || {});
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({
+                        ...baseDisplayConfig,
+                        backgroundImage: String(state.displayConfig?.backgroundImage || '')
+                    });
                     settingsUpdated = true;
                 }
                 if (Array.isArray(settingsPatch.nodeTagPresets)) {
@@ -4916,7 +5303,18 @@
                     }
                 }
 
-                if (remoteCandidate.imageUrl && String(remoteCandidate.imageUrl).startsWith('data:')) {
+                if (item.preserveLocalImageAsset && localExisting && previousImageUrl) {
+                    remoteCandidate.imageUrl = previousImageUrl;
+                } else if (item.imageBlob instanceof Blob) {
+                    try {
+                        await saveImageToIDB(remoteCandidate.id, item.imageBlob);
+                        remoteCandidate.imageUrl = registerObjectUrl(URL.createObjectURL(item.imageBlob));
+                        item.imageUrl = '';
+                    } catch (_) {
+                        remoteCandidate.imageUrl = previousImageUrl || '';
+                        imagePersistFailed++;
+                    }
+                } else if (remoteCandidate.imageUrl && String(remoteCandidate.imageUrl).startsWith('data:')) {
                     try {
                         remoteCandidate.imageUrl = await persistEmbeddedImageForState(remoteCandidate.id, remoteCandidate.imageUrl);
                         item.imageUrl = '';
@@ -4973,6 +5371,21 @@
                     nextStatePatch.displayConfig = normalizeDisplayConfig({ ...(state.displayConfig || {}), ...settingsPatch.displayConfig });
                     settingsUpdated = true;
                 }
+                if (settingsPatch.backgroundImageBlob instanceof Blob) {
+                    const baseDisplayConfig = normalizeDisplayConfig(nextStatePatch.displayConfig || state.displayConfig || {});
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({
+                        ...baseDisplayConfig,
+                        backgroundImage: await blobToDataUrl(settingsPatch.backgroundImageBlob)
+                    });
+                    settingsUpdated = true;
+                } else if (settingsPatch.preserveLocalBackgroundAsset) {
+                    const baseDisplayConfig = normalizeDisplayConfig(nextStatePatch.displayConfig || state.displayConfig || {});
+                    nextStatePatch.displayConfig = normalizeDisplayConfig({
+                        ...baseDisplayConfig,
+                        backgroundImage: String(state.displayConfig?.backgroundImage || '')
+                    });
+                    settingsUpdated = true;
+                }
                 if (Array.isArray(settingsPatch.nodeTagPresets)) {
                     const normalizedPresets = normalizeNodeTagPresetList(settingsPatch.nodeTagPresets);
                     nextStatePatch.nodeTagPresets = normalizedPresets;
@@ -5023,9 +5436,10 @@
             return btoa(unescape(encodeURIComponent(raw)));
         };
 
-        const resolveWebdavTargetUrl = (config) => {
+        const resolveWebdavTargetUrl = (config, overrideFilePath = null) => {
             const endpoint = String(config?.endpoint || '').trim().replace(/\/+$/, '');
-            const filePath = String(config?.filePath || '').trim().replace(/^\/+/, '');
+            const rawFilePath = overrideFilePath === null ? config?.filePath : overrideFilePath;
+            const filePath = String(rawFilePath || '').trim().replace(/^\/+/, '');
             if (!endpoint || !filePath) return '';
             return `${endpoint}/${filePath}`;
         };
@@ -5040,8 +5454,14 @@
 
         const hexEncode = (buffer) => Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
         const utf8Bytes = (text) => new TextEncoder().encode(String(text ?? ''));
-        const sha256Hex = async (text) => {
-            const digest = await crypto.subtle.digest('SHA-256', utf8Bytes(text));
+        const toHashBuffer = async (value) => {
+            if (value instanceof Blob) return value.arrayBuffer();
+            if (value instanceof ArrayBuffer) return value;
+            if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+            return utf8Bytes(value);
+        };
+        const sha256Hex = async (value) => {
+            const digest = await crypto.subtle.digest('SHA-256', await toHashBuffer(value));
             return hexEncode(digest);
         };
         const hmacSha256 = async (keyBytes, dataText) => {
@@ -5061,12 +5481,13 @@
             return { dateStamp, amzDate: `${dateStamp}T${hh}${min}${sec}Z` };
         };
         const trimSlashes = (value) => String(value || '').replace(/^\/+|\/+$/g, '');
-        const buildS3RequestInfo = (config) => {
+        const buildS3RequestInfo = (config, overrideObjectKey = null) => {
             const cfg = normalizeS3Config(config || {});
-            if (!cfg.endpoint || !cfg.bucket || !cfg.objectKey) return null;
+            const objectKey = String(overrideObjectKey === null ? cfg.objectKey : overrideObjectKey || '').trim();
+            if (!cfg.endpoint || !cfg.bucket || !objectKey) return null;
             const base = new URL(cfg.endpoint);
             const basePath = trimSlashes(base.pathname);
-            const encodedObjectKey = cfg.objectKey.split('/').map((part) => encodeRfc3986(part)).join('/');
+            const encodedObjectKey = objectKey.split('/').map((part) => encodeRfc3986(part)).join('/');
             let hostname = base.hostname;
             let pathname = '';
             if (cfg.forcePathStyle) {
@@ -5079,6 +5500,7 @@
             return {
                 url,
                 hostHeader: `${hostname}${base.port ? `:${base.port}` : ''}`,
+                objectKey,
                 region: cfg.region,
                 accessKeyId: cfg.accessKeyId,
                 secretAccessKey: cfg.secretAccessKey,
@@ -5265,41 +5687,139 @@
                 || text.includes('credential');
         };
 
-        const webdavUpload = async (webdavConfigInput = state.webdavConfig, onProgress = null) => {
-            const cfg = normalizeWebdavConfig(webdavConfigInput || {});
-            const targetUrl = resolveWebdavTargetUrl(cfg);
+        const uploadBlobToWebdav = async (cfg, filePath, blob, contentType = 'application/octet-stream', onProgress = null) => {
+            const targetUrl = resolveWebdavTargetUrl(cfg, filePath);
             if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
-            const payload = await buildExportPayload();
-            const body = JSON.stringify(payload, null, 2);
             const response = await executeXhrRequest({
                 method: 'PUT',
                 url: targetUrl,
-                headers: getWebdavHeaders(cfg, { 'Content-Type': 'application/json; charset=utf-8' }),
-                body,
-                onUploadProgress: (progress) => {
-                    if (typeof onProgress === 'function') onProgress(progress);
-                }
+                headers: getWebdavHeaders(cfg, { 'Content-Type': contentType }),
+                body: blob,
+                onUploadProgress: onProgress
             });
             if (!response.ok) throw buildStorageTextError('WebDAV 上传失败', response.status, response.responseText);
+        };
+
+        const downloadBlobFromWebdav = async (cfg, filePath, onProgress = null, options = {}) => {
+            const targetUrl = resolveWebdavTargetUrl(cfg, filePath);
+            if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
+            const response = await executeXhrRequest({
+                method: 'GET',
+                url: targetUrl,
+                responseType: 'blob',
+                maxDownloadBytes: Number(options.maxDownloadBytes || 0),
+                responseLabel: options.responseLabel || 'WebDAV 资源',
+                headers: getWebdavHeaders(cfg, { Accept: options.accept || 'application/json' }),
+                onDownloadProgress: onProgress
+            });
+            return response;
+        };
+
+        const uploadBlobToS3 = async (cfg, objectKey, blob, contentType = 'application/octet-stream', onProgress = null) => {
+            const requestInfo = buildS3RequestInfo(cfg, objectKey);
+            if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            let headers = await signS3Request({ method: 'PUT', requestInfo, payload: blob, contentType });
+            let response = await executeXhrRequest({
+                method: 'PUT',
+                url: requestInfo.url,
+                headers,
+                body: blob,
+                onUploadProgress: onProgress
+            });
+            if (!response.ok) {
+                const responseText = String(response.responseText || '');
+                if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
+                    const retryInfo = buildS3RequestInfo({ ...cfg, region: 'us-east-1' }, objectKey);
+                    headers = await signS3Request({ method: 'PUT', requestInfo: retryInfo, payload: blob, contentType });
+                    response = await executeXhrRequest({
+                        method: 'PUT',
+                        url: retryInfo.url,
+                        headers,
+                        body: blob,
+                        onUploadProgress: onProgress
+                    });
+                    if (response.ok) return;
+                }
+                throw buildStorageTextError('S3 上传失败', response.status, response.responseText || '');
+            }
+        };
+
+        const downloadBlobFromS3 = async (cfg, objectKey, onProgress = null, options = {}) => {
+            let requestInfo = buildS3RequestInfo(cfg, objectKey);
+            if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            let headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
+            let response = await executeXhrRequest({
+                method: 'GET',
+                url: requestInfo.url,
+                responseType: 'blob',
+                maxDownloadBytes: Number(options.maxDownloadBytes || 0),
+                responseLabel: options.responseLabel || 'S3 资源',
+                headers,
+                onDownloadProgress: onProgress
+            });
+            if (!response.ok) {
+                const responseText = await readBlobAsText(response.responseBlob);
+                if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
+                    requestInfo = buildS3RequestInfo({ ...cfg, region: 'us-east-1' }, objectKey);
+                    headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
+                    response = await executeXhrRequest({
+                        method: 'GET',
+                        url: requestInfo.url,
+                        responseType: 'blob',
+                        maxDownloadBytes: Number(options.maxDownloadBytes || 0),
+                        responseLabel: options.responseLabel || 'S3 资源',
+                        headers,
+                        onDownloadProgress: onProgress
+                    });
+                    if (response.ok) return response;
+                }
+            }
+            return response;
+        };
+
+        const webdavUpload = async (webdavConfigInput = state.webdavConfig, onProgress = null) => {
+            const cfg = normalizeWebdavConfig(webdavConfigInput || {});
+            if (!resolveWebdavTargetUrl(cfg)) throw new Error('请先配置 WebDAV 地址和文件路径');
+            const bundle = await buildCurrentSplitSyncUploadBundleForDraft({ syncMethod: 'webdav', webdavConfig: cfg, s3Config: {} });
+            const remoteMetadata = await tryLoadRemoteSplitMetadataForWebdav(cfg);
+            const uploadPlan = await planIncrementalSyncUpload(bundle, remoteMetadata);
+            const metadataBlob = new Blob([JSON.stringify(bundle.metadata, null, 2)], { type: 'application/json; charset=utf-8' });
+            const shouldUploadMetadata = uploadPlan.shouldUploadMetadata || uploadPlan.assetEntries.length > 0;
+            if (!shouldUploadMetadata && !uploadPlan.assetEntries.length) return 'WebDAV';
+            const totalSteps = Math.max(1, uploadPlan.assetEntries.length + (shouldUploadMetadata ? 1 : 0));
+            const emitStepProgress = (index) => {
+                if (typeof onProgress !== 'function') return;
+                onProgress({ hasTotal: true, percent: Math.round(((index + 1) / totalSteps) * 100), loaded: index + 1, total: totalSteps });
+            };
+            let stepIndex = -1;
+            for (const entry of uploadPlan.assetEntries) {
+                await uploadBlobToWebdav(cfg, entry.assetPath, entry.blob, entry.mimeType || entry.blob?.type || 'application/octet-stream');
+                stepIndex += 1;
+                emitStepProgress(stepIndex);
+            }
+            if (shouldUploadMetadata) {
+                await uploadBlobToWebdav(cfg, bundle.metadataPath, metadataBlob, metadataBlob.type);
+                stepIndex += 1;
+                emitStepProgress(stepIndex);
+            }
             return 'WebDAV';
         };
 
         const webdavDownload = async (webdavConfigInput = state.webdavConfig, onProgress = null) => {
             const cfg = normalizeWebdavConfig(webdavConfigInput || {});
-            const targetUrl = resolveWebdavTargetUrl(cfg);
-            if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
+            if (!resolveWebdavTargetUrl(cfg)) throw new Error('请先配置 WebDAV 地址和文件路径');
+            const layout = buildSplitSyncTargetLayout(cfg.filePath);
             const importBudget = getImportSizeSafetyBudget('WebDAV 备份');
-            const response = await executeXhrRequest({
-                method: 'GET',
-                url: targetUrl,
-                responseType: 'blob',
+            let response = await downloadBlobFromWebdav(cfg, layout.metadataPath, onProgress, {
                 maxDownloadBytes: importBudget.hardBytes,
-                responseLabel: 'WebDAV 备份',
-                headers: getWebdavHeaders(cfg, { Accept: 'application/json' }),
-                onDownloadProgress: (progress) => {
-                    if (typeof onProgress === 'function') onProgress(progress);
-                }
+                responseLabel: 'WebDAV 同步元数据'
             });
+            if (!response.ok && Number(response.status) === 404) {
+                response = await downloadBlobFromWebdav(cfg, cfg.filePath, onProgress, {
+                    maxDownloadBytes: importBudget.hardBytes,
+                    responseLabel: 'WebDAV 备份'
+                });
+            }
             if (!response.ok) {
                 throw buildStorageTextError('WebDAV 拉取失败', response.status, await readBlobAsText(response.responseBlob));
             }
@@ -5308,80 +5828,59 @@
 
         const s3Upload = async (s3ConfigInput = state.s3Config, onProgress = null) => {
             const cfg = normalizeS3Config(s3ConfigInput || {});
-            const requestInfo = buildS3RequestInfo(cfg);
-            if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
-            const payloadObj = await buildExportPayload();
-            const payload = JSON.stringify(payloadObj, null, 2);
-            let headers = await signS3Request({
-                method: 'PUT',
-                requestInfo,
-                payload,
-                contentType: 'application/json; charset=utf-8'
-            });
-            let response = await executeXhrRequest({
-                method: 'PUT',
-                url: requestInfo.url,
-                headers,
-                body: payload,
-                onUploadProgress: (progress) => {
-                    if (typeof onProgress === 'function') onProgress(progress);
-                }
-            });
-            if (!response.ok) {
-                const responseText = String(response.responseText || '');
-                if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
-                    const retryInfo = { ...requestInfo, region: 'us-east-1' };
-                    headers = await signS3Request({ method: 'PUT', requestInfo: retryInfo, payload, contentType: 'application/json; charset=utf-8' });
-                    response = await executeXhrRequest({
-                        method: 'PUT',
-                        url: retryInfo.url,
-                        headers,
-                        body: payload,
-                        onUploadProgress: (progress) => {
-                            if (typeof onProgress === 'function') onProgress(progress);
-                        }
-                    });
-                    if (response.ok) return 'S3';
-                }
-                throw buildStorageTextError('S3 上传失败', response.status, response.responseText || '');
+            if (!buildS3RequestInfo(cfg)) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            const bundle = await buildCurrentSplitSyncUploadBundleForDraft({ syncMethod: 's3', webdavConfig: {}, s3Config: cfg });
+            const remoteMetadata = await tryLoadRemoteSplitMetadataForS3(cfg);
+            const uploadPlan = await planIncrementalSyncUpload(bundle, remoteMetadata);
+            const metadataBlob = new Blob([JSON.stringify(bundle.metadata, null, 2)], { type: 'application/json; charset=utf-8' });
+            const shouldUploadMetadata = uploadPlan.shouldUploadMetadata || uploadPlan.assetEntries.length > 0;
+            if (!shouldUploadMetadata && !uploadPlan.assetEntries.length) return 'S3';
+            const totalSteps = Math.max(1, uploadPlan.assetEntries.length + (shouldUploadMetadata ? 1 : 0));
+            const emitStepProgress = (index) => {
+                if (typeof onProgress !== 'function') return;
+                onProgress({ hasTotal: true, percent: Math.round(((index + 1) / totalSteps) * 100), loaded: index + 1, total: totalSteps });
+            };
+            let stepIndex = -1;
+            for (const entry of uploadPlan.assetEntries) {
+                await uploadBlobToS3(cfg, entry.assetPath, entry.blob, entry.mimeType || entry.blob?.type || 'application/octet-stream');
+                stepIndex += 1;
+                emitStepProgress(stepIndex);
+            }
+            if (shouldUploadMetadata) {
+                await uploadBlobToS3(cfg, bundle.metadataPath, metadataBlob, metadataBlob.type);
+                stepIndex += 1;
+                emitStepProgress(stepIndex);
             }
             return 'S3';
         };
 
         const s3Download = async (s3ConfigInput = state.s3Config, onProgress = null) => {
             const cfg = normalizeS3Config(s3ConfigInput || {});
-            const requestInfo = buildS3RequestInfo(cfg);
-            if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            if (!buildS3RequestInfo(cfg)) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            const layout = buildSplitSyncTargetLayout(cfg.objectKey);
             const importBudget = getImportSizeSafetyBudget('S3 备份');
-            let headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
-            let response = await executeXhrRequest({
-                method: 'GET',
-                url: requestInfo.url,
-                responseType: 'blob',
+            const attemptedPaths = [layout.metadataPath];
+            let response = await downloadBlobFromS3(cfg, layout.metadataPath, onProgress, {
                 maxDownloadBytes: importBudget.hardBytes,
-                responseLabel: 'S3 备份',
-                headers,
-                onDownloadProgress: (progress) => {
-                    if (typeof onProgress === 'function') onProgress(progress);
-                }
+                responseLabel: 'S3 同步元数据'
             });
             if (!response.ok) {
                 const responseText = await readBlobAsText(response.responseBlob);
-                if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
-                    const retryInfo = { ...requestInfo, region: 'us-east-1' };
-                    headers = await signS3Request({ method: 'GET', requestInfo: retryInfo, payload: '' });
-                    response = await executeXhrRequest({
-                        method: 'GET',
-                        url: retryInfo.url,
-                        responseType: 'blob',
+                const isMissingMetadata = Number(response.status) === 404 || /NoSuchKey/i.test(responseText);
+                if (isMissingMetadata) {
+                    attemptedPaths.push(cfg.objectKey);
+                    response = await downloadBlobFromS3(cfg, cfg.objectKey, onProgress, {
                         maxDownloadBytes: importBudget.hardBytes,
-                        responseLabel: 'S3 备份',
-                        headers,
-                        onDownloadProgress: (progress) => {
-                            if (typeof onProgress === 'function') onProgress(progress);
-                        }
+                        responseLabel: 'S3 备份'
                     });
                     if (response.ok) return response.responseBlob || new Blob(['{}'], { type: 'application/json' });
+                    const fallbackResponseText = await readBlobAsText(response.responseBlob);
+                    const isMissingLegacy = Number(response.status) === 404 || /NoSuchKey/i.test(fallbackResponseText);
+                    if (isMissingLegacy) {
+                        const attemptedLabel = attemptedPaths.filter(Boolean).join('、');
+                        throw new Error(`未找到远端同步备份：已尝试 ${attemptedLabel}。请先上传一次同步数据，或确认 Base Object Key 是否填对。`);
+                    }
+                    throw buildStorageTextError('S3 拉取失败', response.status, fallbackResponseText || '');
                 }
                 throw buildStorageTextError('S3 拉取失败', response.status, responseText || '');
             }
@@ -5586,7 +6085,35 @@
                 updateSyncProgress(55, '数据拉取成功，正在解析...');
                 const rawJson = parseJsonOrThrow(await readBlobAsText(rawBlob), `${channel} 备份`, Number(rawBlob?.size || 0));
                 ensureImportMetadataSafe(rawJson);
-                const resolved = resolveImportPayload(rawJson);
+                let resolved = resolveImportPayload(rawJson);
+                if (isSplitSyncMetadataPayload(rawJson)) {
+                    let localBundle = null;
+                    try {
+                        localBundle = await buildCurrentSplitSyncUploadBundleForDraft(draft);
+                    } catch (error) {
+                        const message = String(error?.message || error || '').trim();
+                        if (!/本地图片资源缺失|无法从当前浏览器读取/i.test(message)) throw error;
+                        console.warn('Local split bundle unavailable during sync download; continuing without local asset reuse.', error);
+                    }
+                    if (String(localBundle?.metadata?.contentHash || '').trim() && String(rawJson?.contentHash || '').trim() === String(localBundle.metadata.contentHash || '').trim()) {
+                        updateSyncProgress(95, '远端内容没有变化');
+                        showToast(`从 ${channel} 拉取：远端已是最新`);
+                        finishSyncProgress(`从 ${channel} 拉取完成（无变化）`);
+                        return;
+                    }
+                    const localAssetIndex = buildSplitAssetIndexFromMetadata(localBundle?.metadata || {});
+                    updateSyncProgress(68, '同步元数据已解析，正在拉取图片资源...');
+                    resolved = await hydrateSplitResolvedPayloadAssets(resolved, async (assetRef) => {
+                        const assetPath = String(assetRef?.assetPath || '').trim();
+                        const localAsset = assetPath ? localAssetIndex[assetPath] : null;
+                        const localHash = String(localAsset?.contentHash || '').trim();
+                        const remoteHash = String(assetRef?.contentHash || '').trim();
+                        if (localAsset && localHash && remoteHash && localHash === remoteHash) {
+                            return { preserveLocal: true };
+                        }
+                        return { blob: await fetchSplitAssetBlobForSyncDraft(draft, assetRef) };
+                    });
+                }
                 ensureImportPayloadSafe(resolved);
                 updateSyncProgress(74, '解析完成，正在按远端覆盖本地...');
                 const overwriteResult = await overwriteImportResolvedPayload(resolved, { sourceLabel: `${channel} 备份` });
@@ -5622,6 +6149,9 @@
                     const rawText = String(ev?.target?.result || '').trim();
                     const rawJson = parseJsonOrThrow(rawText, '导入文件', Number(file?.size || 0));
                     ensureImportMetadataSafe(rawJson);
+                    if (isSplitSyncMetadataPayload(rawJson)) {
+                        throw new Error('该文件是云同步用的 split manifest，不是可直接导入的完整本地备份');
+                    }
                     const resolved = resolveImportPayload(rawJson);
                     ensureImportPayloadSafe(resolved);
                     const overwriteResult = await overwriteImportResolvedPayload(resolved, { sourceLabel: '导入备份' });
@@ -6878,10 +7408,16 @@
                 const safeUsername = escapeHtml(syncConfig.username || '');
                 const safePassword = escapeHtml(syncConfig.password || '');
                 const safeFilePath = escapeHtml(syncConfig.filePath || 'nai_artists_sync.json');
+                const webdavLayout = buildSplitSyncTargetLayout(syncConfig.filePath || 'nai_artists_sync.json');
+                const safeWebdavMetadataPath = escapeHtml(webdavLayout.metadataPath);
+                const safeWebdavAssetPrefix = escapeHtml(`${webdavLayout.assetPrefix}...`);
                 const safeS3Endpoint = escapeHtml(s3Config.endpoint || '');
                 const safeS3Region = escapeHtml(s3Config.region || 'us-east-1');
                 const safeS3Bucket = escapeHtml(s3Config.bucket || '');
                 const safeS3ObjectKey = escapeHtml(s3Config.objectKey || 'nai_artists_sync.json');
+                const s3Layout = buildSplitSyncTargetLayout(s3Config.objectKey || 'nai_artists_sync.json');
+                const safeS3MetadataPath = escapeHtml(s3Layout.metadataPath);
+                const safeS3AssetPrefix = escapeHtml(`${s3Layout.assetPrefix}...`);
                 const safeS3AccessKeyId = escapeHtml(s3Config.accessKeyId || '');
                 const safeS3SecretAccessKey = escapeHtml(s3Config.secretAccessKey || '');
                 const safeS3SessionToken = escapeHtml(s3Config.sessionToken || '');
@@ -6931,6 +7467,7 @@
                                     <div>
                                         <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">远程文件路径</label>
                                         <input type="text" id="webdav-filepath-input" value="${safeFilePath}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="AIGallery/nai_artists_sync.json">
+                                        <p class="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">这是基准路径。实际同步会写入 <code class="font-mono text-[10px]">${safeWebdavMetadataPath}</code> 和 <code class="font-mono text-[10px]">${safeWebdavAssetPrefix}</code></p>
                                     </div>
                                 </div>` : `
                                 <div class="glass-card bg-slate-50/80 dark:bg-slate-800/55 rounded-2xl p-4 border border-slate-200 dark:border-slate-700 space-y-3">
@@ -6957,8 +7494,9 @@
                                         </div>
                                     </div>
                                     <div>
-                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">对象路径 (Object Key)</label>
+                                        <label class="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">基准对象路径 (Base Object Key)</label>
                                         <input type="text" id="s3-objectkey-input" value="${safeS3ObjectKey}" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all text-sm" placeholder="AIGallery/nai_artists_sync.json">
+                                        <p class="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">这里只配置基准 key。实际同步会写入 <code class="font-mono text-[10px]">${safeS3MetadataPath}</code> 和 <code class="font-mono text-[10px]">${safeS3AssetPrefix}</code></p>
                                     </div>
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <div>
