@@ -1,54 +1,131 @@
 # AI Gallery
 
-单 HTML 文件的 AI 图像收藏管理器。双击打开，数据存在浏览器本地，不需要服务器和依赖。
+把 AI 图片收藏、生成参数、ComfyUI 工作流和备份放在同一个页面里管理的单文件工具。
 
-## 功能
+如果你平时会一边收图，一边记模型、采样器、Prompt、LoRA，最后东西散在文件夹、聊天记录和浏览器书签里，这个页面就是拿来把这些碎片收回来的。下载后直接打开 `artist manager.html` 就能用；默认数据只留在当前浏览器，本地跑，不需要后端，也没有构建步骤。
 
-- 图像卡片的添加、编辑、删除、收藏，支持分类管理
-- 从 PNG/JPEG/WebP 图片元数据中自动读取 Stable Diffusion、NovelAI、ComfyUI 的生成参数（模型、采样器、CFG Scale、Seed、Steps 等）
-- 上传 ComfyUI 图片时自动检测并展示工作流 JSON
-- 多选卡片组合 Prompt，可调权重，一键复制
-- 接入 OpenAI 兼容 API，上传图片自动生成画风总结
-- 按名称、热度、模型、收藏等维度排序筛选
-- JSON 格式导入导出，含图片 Base64，可跨设备迁移
-- 批量扫描已有图片的生成参数
+## 这东西适合谁
 
-## 界面
+- 想用一个页面整理画师、参考图、标签和备注的人
+- 希望从图片里直接读出 Stable Diffusion / NovelAI / ComfyUI 生成参数的人
+- 不想搭服务，只想双击打开就开始管理图库的人
+- 主要本地使用，但又想保留 WebDAV / S3 备份通道的人
 
-- iOS 26 Liquid Glass 风格的毛玻璃主题（SVG feTurbulence 折射 + 高光 + 噪点），可在设置中切换
-- 深色、浅色、午夜、樱花、海洋五套主题
-- 支持自定义背景图，上传后自动检测亮度适配文字颜色
-- 四种磁贴预设（紧凑 / 平衡 / 展示 / 自定义），可调列数、间距、比例
-- NSFW 标记后自动模糊，悬停查看
+## 你可以拿它做什么
+
+### 1. 管理图库条目
+
+- 添加、编辑、删除、收藏条目，支持分类、备注、热度和多维筛选 / 排序
+- 支持本地图片、远程图片和无图条目
+- NSFW 条目可单独标记，并按设置自动模糊
+- 多选卡片后可以组合 Prompt，调整权重后直接复制
+
+### 2. 从图片里读生成参数
+
+- 支持从 PNG / JPEG / WebP 中解析生成信息
+- 兼容 Stable Diffusion WebUI (A1111)、ComfyUI、NovelAI 常见元数据
+- 可自动合并模型、采样器、CFG、Seed、Steps、LoRA 等字段
+- 遇到 ComfyUI 图片时，会额外识别并展示工作流 JSON
+
+### 3. 处理 ComfyUI 工作流
+
+- 在页面里直接查看 ComfyUI 工作流
+- 一键复制工作流 JSON
+- 一键下载 `comfyui-workflow.json`
+- 可配合 OpenAI 兼容接口，从工作流里进一步提取有效参数
+
+### 4. 做本地备份和远程同步
+
+- 导出完整 JSON 备份，图片可以一起打包进去
+- 导入时会检查体积、版本和条目数量，并给出差异确认
+- 支持覆盖导入，也支持合并导入
+- 可选 WebDAV / S3 兼容存储手动同步
+- 同步面板带进度提示、冲突对比和覆盖提醒
+- 同步配置也能单独导入 / 导出
+
+### 5. 用 AI 做一点辅助整理
+
+- 接入 OpenAI 兼容 API 后，可以为图片生成画风总结
+- 标题分析和工作流分析分别支持独立的 Host / Key / Model 配置
+- 默认不联网；只有你主动配置 AI 接口或远程同步时，页面才会发请求
+
+### 6. 把界面调到顺手
+
+- 提供浅色、深色、午夜、樱花、海洋五套主题
+- 支持默认风格和 Liquid Glass 风格切换
+- 支持自定义背景图，并根据背景亮度调整文字对比
+- 提供紧凑 / 平衡 / 展示 / 自定义等磁贴布局预设
+- 兼顾桌面端和移动端使用
+
+## 一个典型用法
+
+1. 打开 `artist manager.html`
+2. 新建条目，上传图片或贴远程图片地址
+3. 让页面自动读取生成参数，补上分类、备注和标签
+4. 需要时查看 ComfyUI 工作流，复制或下载 JSON
+5. 最后导出完整备份，或者手动同步到 WebDAV / S3
+
+## 快速开始
+
+1. 克隆仓库，或直接下载项目文件
+2. 用浏览器打开 `artist manager.html`
+3. 开始录入条目，或者导入已有 JSON 备份
+4. 如果你需要可选能力，再按需配置：
+   - 在设置里填入 OpenAI 兼容接口，用于画风总结 / 工作流分析
+   - 在同步面板里配置 WebDAV 或 S3，用于远程备份
+
+推荐优先使用最新版 Chrome 或 Edge。Safari / iOS 也能打开，但大体积导入会更早触发安全限制，这是页面为了避免移动端 WebKit 直接吃满内存而加的保护。
+
+## 数据存储与隐私
+
+项目默认是本地优先的：
+
+- 图片 Blob 存在 `IndexedDB`
+- 条目数据、分类、界面设置和同步配置存在 `localStorage`
+- 不配置 AI 接口和远程同步时，可以离线使用
+- 你填入的 AI / WebDAV / S3 配置也会保存在当前浏览器里，所以导出备份或共用设备时要额外留意凭证安全
+
+有两点最好提前知道：
+
+- 导出的完整备份里，除了条目数据，还可能包含图片内容、页面设置和同步配置
+- 如果浏览器清理了站点数据，本地图片库可能会丢失；条目记录未必一起消失，所以更稳妥的做法是定期导出备份，或者启用同步
+
+## 图片元数据支持
+
+| 格式 | 读取方式 | 常见来源 |
+|------|----------|----------|
+| PNG | `tEXt` / `zTXt` / `iTXt` 块解析 | A1111、ComfyUI 等 |
+| JPEG | EXIF `UserComment` | 部分 Stable Diffusion 导出链路 |
+| WebP | XMP + EXIF 块解析 | NovelAI 与其他工具导出 |
+
+当前重点兼容的生成器：
+
+- Stable Diffusion WebUI (A1111) - `parameters` 文本
+- ComfyUI - `prompt` / `workflow` JSON
+- NovelAI - `Comment` / `Description` 字段
 
 ## 技术栈
 
 | 项目 | 说明 |
 |------|------|
-| HTML / CSS / JS | 单文件，无构建步骤 |
-| Tailwind CSS | CDN 引入 |
-| Lucide Icons | CDN 引入 |
-| IndexedDB | 图片 Blob 存储 |
-| LocalStorage | 元数据和配置持久化 |
+| HTML / CSS / JavaScript | 主应用，单文件运行 |
+| Tailwind CSS | 通过 CDN 引入，用于界面样式 |
+| Lucide Icons | 通过 CDN 引入，用于图标 |
+| IndexedDB | 存储本地图片 Blob |
+| LocalStorage | 存储条目元数据、分类和配置 |
+| Node.js `node:test` | 回归测试（导入导出、同步、工作流等） |
 
-## 使用
+## 项目结构
 
-1. 下载 `artist manager.html`
-2. 用浏览器打开（推荐 Chrome / Edge）
-3. 开始用
+- `artist manager.html` - 主应用，绝大部分逻辑都在这里
+- `README.md` - 项目说明
+- `tests/` - 回归测试，覆盖同步、导入导出、工作流下载、图片存储保护等能力
 
-## 图片元数据支持
+## 已知边界
 
-| 格式 | 读取方式 |
-|------|----------|
-| PNG | tEXt / zTXt / iTXt 块解析 |
-| JPEG | EXIF UserComment 字段 |
-| WebP | XMP + EXIF 块解析 |
-
-支持的生成器：
-- Stable Diffusion WebUI (A1111) — `parameters` 文本
-- ComfyUI — `prompt` / `workflow` JSON
-- NovelAI — `Comment` / `Description` 字段
+- 这是一个浏览器里的单文件工具，不是多用户系统，也没有服务端权限模型
+- 当前仓库不包含可安装的 PWA 运行时资源，就是普通网页应用
+- AI 能力、WebDAV、S3 同步都属于可选功能，需要你自己提供接口或存储配置
 
 ## License
 
