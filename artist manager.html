@@ -1183,6 +1183,7 @@
         const GENERATOR_WINDOW_POS_KEY = 'nai-generator-window-pos';
         const NODE_TAG_PRESETS_KEY = 'nai-node-tag-presets';
         const NODE_TAG_PRESET_ACTIVE_KEY = 'nai-node-tag-active-preset-id';
+        const LOCAL_IMAGE_INDEX_KEY = 'nai-local-image-ids';
         const EXPORT_VERSION = 4;
         const METADATA_EDITOR_PATH = 'C:/Users/gekdanhs/Downloads/AI-Image-Metadata-Editor.html';
 
@@ -1227,6 +1228,69 @@
             reader.readAsDataURL(blob);
         });
 
+        const readBlobAsText = (blob) => new Promise((resolve, reject) => {
+            if (!(blob instanceof Blob)) {
+                resolve(String(blob || ''));
+                return;
+            }
+            if (typeof blob.text === 'function') {
+                blob.text().then(resolve).catch(reject);
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = reject;
+            reader.readAsText(blob);
+        });
+
+        const readTrackedLocalImageIds = () => {
+            try {
+                const raw = JSON.parse(localStorage.getItem(LOCAL_IMAGE_INDEX_KEY) || '[]');
+                if (!Array.isArray(raw)) return [];
+                return Array.from(new Set(raw.map((value) => String(value || '').trim()).filter(Boolean)));
+            } catch (_) {
+                return [];
+            }
+        };
+
+        const writeTrackedLocalImageIds = (ids = []) => {
+            const normalized = Array.from(new Set((Array.isArray(ids) ? ids : []).map((value) => String(value || '').trim()).filter(Boolean)));
+            safeLocalStorageSetItem(LOCAL_IMAGE_INDEX_KEY, JSON.stringify(normalized));
+        };
+
+        const rememberTrackedLocalImageIds = (ids = []) => {
+            const merged = new Set(readTrackedLocalImageIds());
+            (Array.isArray(ids) ? ids : []).forEach((value) => {
+                const normalized = String(value || '').trim();
+                if (normalized) merged.add(normalized);
+            });
+            const nextIds = Array.from(merged);
+            writeTrackedLocalImageIds(nextIds);
+            return nextIds;
+        };
+
+        const forgetTrackedLocalImageIds = (ids = []) => {
+            const current = new Set(readTrackedLocalImageIds());
+            (Array.isArray(ids) ? ids : []).forEach((value) => {
+                current.delete(String(value || '').trim());
+            });
+            const nextIds = Array.from(current);
+            writeTrackedLocalImageIds(nextIds);
+            return nextIds;
+        };
+
+        const isEmbeddedLocalImageUrl = (url) => {
+            const value = String(url || '').trim().toLowerCase();
+            return value.startsWith('data:') || value.startsWith('blob:');
+        };
+
+        const shouldRemoveTrackedLocalImage = (previousArtist = {}, nextImageUrl = '', trackedLocalImageIds = []) => {
+            const previousId = String(previousArtist?.id || '').trim();
+            const tracked = new Set(Array.isArray(trackedLocalImageIds) ? trackedLocalImageIds : []);
+            const previousHadLocalImage = (!!previousId && tracked.has(previousId)) || isEmbeddedLocalImageUrl(previousArtist?.imageUrl || '');
+            return previousHadLocalImage && !isEmbeddedLocalImageUrl(nextImageUrl);
+        };
+
         const saveImageToIDB = async (id, imageData) => {
             try {
                 const blob = typeof imageData === 'string' ? await dataUrlToBlob(imageData) : imageData;
@@ -1234,7 +1298,10 @@
                 return new Promise((resolve, reject) => {
                     const tx = db.transaction([STORE_NAME], 'readwrite');
                     const req = tx.objectStore(STORE_NAME).put({ id, blob });
-                    req.onsuccess = () => resolve();
+                    req.onsuccess = () => {
+                        rememberTrackedLocalImageIds([id]);
+                        resolve();
+                    };
                     req.onerror = () => reject(req.error);
                 });
             } catch (e) {
@@ -1252,18 +1319,22 @@
                     req.onsuccess = async () => {
                         const out = {};
                         const legacyToMigrate = [];
+                        const loadedIds = [];
                         for (const item of req.result) {
                             if (item.blob instanceof Blob) {
                                 try {
                                     out[item.id] = forExport ? await blobToDataUrl(item.blob) : registerObjectUrl(URL.createObjectURL(item.blob));
+                                    loadedIds.push(item.id);
                                 } catch (e) {
                                     console.error("Failed to convert blob to data URL", e);
                                 }
                             } else if (item.base64Data) {
                                 out[item.id] = item.base64Data;
+                                loadedIds.push(item.id);
                                 legacyToMigrate.push({ id: item.id, base64Data: item.base64Data });
                             }
                         }
+                        if (loadedIds.length) rememberTrackedLocalImageIds(loadedIds);
                         if (legacyToMigrate.length) {
                             Promise.allSettled(legacyToMigrate.map(async (entry) => {
                                 const migratedBlob = await dataUrlToBlob(entry.base64Data);
@@ -1283,7 +1354,10 @@
                 return new Promise((resolve) => {
                     const tx = db.transaction([STORE_NAME], 'readwrite');
                     tx.objectStore(STORE_NAME).delete(id);
-                    tx.oncomplete = () => resolve();
+                    tx.oncomplete = () => {
+                        forgetTrackedLocalImageIds([id]);
+                        resolve();
+                    };
                 });
             } catch (e) { console.error("IDB Delete Error", e); }
         };
@@ -1308,6 +1382,42 @@
             } catch (_) {
                 return null;
             }
+        };
+
+        const requestPersistentImageStorage = async () => {
+            try {
+                const storage = navigator?.storage;
+                if (!storage?.persisted || !storage?.persist) return false;
+                if (await storage.persisted()) return true;
+                return !!(await storage.persist());
+            } catch (_) {
+                return false;
+            }
+        };
+
+        const persistEmbeddedImageForState = async (id, imageUrl) => {
+            const normalizedUrl = String(imageUrl || '').trim();
+            if (!normalizedUrl.startsWith('data:')) return normalizedUrl;
+            const blob = await dataUrlToBlob(normalizedUrl);
+            await saveImageToIDB(id, blob);
+            return registerObjectUrl(URL.createObjectURL(blob));
+        };
+
+        const shouldWarnAboutMissingImageLibrary = (artists = [], imageMap = {}, trackedLocalImageIds = []) => {
+            const list = Array.isArray(artists) ? artists : [];
+            if (Object.keys(imageMap || {}).length > 0) return false;
+            if ((Array.isArray(trackedLocalImageIds) ? trackedLocalImageIds : []).length > 0) return true;
+            if (list.length < 3) return false;
+
+            const externalImageCount = list.filter((artist) => {
+                const url = String(artist?.imageUrl || '').trim().toLowerCase();
+                return url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:');
+            }).length;
+
+            if (externalImageCount === list.length) return false;
+
+            const emptyImageCount = list.filter((artist) => !String(artist?.imageUrl || '').trim()).length;
+            return emptyImageCount >= Math.max(2, Math.ceil(list.length * 0.5));
         };
 
         // =========================================
@@ -3441,7 +3551,7 @@
             if (!state.isDataLoading && newState.liveArtists) {
                 const metadata = state.liveArtists.map(a => {
                     const { imageUrl, ...rest } = a;
-                    const safeUrl = (imageUrl && (imageUrl.startsWith('data:') || imageUrl.startsWith('blob:'))) ? '' : imageUrl;
+                    const safeUrl = isEmbeddedLocalImageUrl(imageUrl) ? '' : imageUrl;
                     return { ...rest, imageUrl: safeUrl };
                 });
                 safeLocalStorageSetItem(METADATA_KEY, JSON.stringify(metadata));
@@ -4144,13 +4254,62 @@
         const MAX_IMPORT_ARTISTS = 12000;
         const IMPORT_WARN_SIZE_BYTES = 180 * 1024 * 1024;
         const IMPORT_HARD_SIZE_BYTES = 1024 * 1024 * 1024;
-        const parseJsonOrThrow = (rawText, sourceLabel = 'JSON') => {
+        const IOS_WEBKIT_IMPORT_WARN_SIZE_BYTES = 32 * 1024 * 1024;
+        const IOS_WEBKIT_IMPORT_HARD_SIZE_BYTES = 64 * 1024 * 1024;
+        const isMemoryConstrainedAppleMobileBrowser = (nav = navigator) => {
+            const ua = String(nav?.userAgent || '');
+            const platform = String(nav?.platform || '');
+            const maxTouchPoints = Number(nav?.maxTouchPoints || 0);
+            const isAppleMobileDevice = /iP(hone|ad|od)/i.test(ua)
+                || (/Mac/i.test(platform) && maxTouchPoints > 1);
+            return isAppleMobileDevice && /AppleWebKit/i.test(ua);
+        };
+        const getImportSizeSafetyBudget = (sourceLabel = '导入数据', nav = navigator) => {
+            if (isMemoryConstrainedAppleMobileBrowser(nav)) {
+                return {
+                    warnBytes: IOS_WEBKIT_IMPORT_WARN_SIZE_BYTES,
+                    hardBytes: IOS_WEBKIT_IMPORT_HARD_SIZE_BYTES,
+                    platformLabel: 'iOS 浏览器'
+                };
+            }
+            return {
+                warnBytes: IMPORT_WARN_SIZE_BYTES,
+                hardBytes: IMPORT_HARD_SIZE_BYTES,
+                platformLabel: String(sourceLabel || '导入数据')
+            };
+        };
+        const ensureImportByteSizeSafe = (bytesValue, sourceLabel = '导入数据', nav = navigator) => {
+            const bytes = Math.max(0, Number(bytesValue) || 0);
+            const budget = getImportSizeSafetyBudget(sourceLabel, nav);
+            if (bytes > budget.hardBytes) {
+                const roundedMb = Math.round(bytes / 1024 / 1024);
+                const hardMb = Math.round(budget.hardBytes / 1024 / 1024);
+                if (budget.platformLabel === 'iOS 浏览器') {
+                    throw new Error(`${sourceLabel} 体积过大（${roundedMb} MB），${budget.platformLabel} 在同步拉取时更容易因内存不足崩溃；请拆分备份或改用桌面浏览器（建议控制在 ${hardMb} MB 以内）`);
+                }
+                throw new Error(`${sourceLabel} 体积过大（${roundedMb} MB），请拆分后再导入（上限 ${hardMb} MB）`);
+            }
+            if (bytes > budget.warnBytes) {
+                const roundedMb = Math.round(bytes / 1024 / 1024);
+                const warnMb = Math.round(budget.warnBytes / 1024 / 1024);
+                const accepted = confirm(
+                    budget.platformLabel === 'iOS 浏览器'
+                        ? `${sourceLabel} 体积较大（约 ${roundedMb} MB），${budget.platformLabel} 在解析整份备份和图片 Base64 时容易出现页面崩溃。\n\n建议拆分备份，或改用桌面浏览器处理大体积同步（建议控制在 ${warnMb} MB 以内）。\n\n是否继续？`
+                        : `${sourceLabel} 体积较大（约 ${roundedMb} MB），导入可能耗时较长并占用较多内存。\n\n是否继续？`
+                );
+                if (!accepted) throw new Error('已取消导入');
+            }
+        };
+        const rejectOversizedDownload = (sourceLabel = '同步数据', bytesValue = 0, nav = navigator) => {
+            ensureImportByteSizeSafe(bytesValue, sourceLabel, nav);
+        };
+        const parseJsonOrThrow = (rawText, sourceLabel = 'JSON', knownBytes = null) => {
             const text = String(rawText || '').trim();
             if (!text) throw new Error(`${sourceLabel} 内容为空`);
-            const bytes = new Blob([text]).size;
-            if (bytes > IMPORT_HARD_SIZE_BYTES) {
-                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 1024 MB）`);
-            }
+            const bytes = Number.isFinite(Number(knownBytes)) && Number(knownBytes) > 0
+                ? Number(knownBytes)
+                : new Blob([text]).size;
+            ensureImportByteSizeSafe(bytes, sourceLabel);
             try {
                 return JSON.parse(text);
             } catch (_) {
@@ -4164,14 +4323,7 @@
             }
         };
         const ensureImportFileSizeSafe = (file, sourceLabel = '导入文件') => {
-            const bytes = Number(file?.size || 0);
-            if (bytes > IMPORT_HARD_SIZE_BYTES) {
-                throw new Error(`${sourceLabel} 体积过大（${Math.round(bytes / 1024 / 1024)} MB），请拆分后再导入（上限 1024 MB）`);
-            }
-            if (bytes > IMPORT_WARN_SIZE_BYTES) {
-                const accepted = confirm(`${sourceLabel} 体积较大（约 ${Math.round(bytes / 1024 / 1024)} MB），导入可能耗时较长并占用较多内存。\n\n是否继续？`);
-                if (!accepted) throw new Error('已取消导入');
-            }
+            ensureImportByteSizeSafe(Number(file?.size || 0), sourceLabel);
         };
         const ensureImportMetadataSafe = (rawJson) => {
             if (!rawJson || typeof rawJson !== 'object' || Array.isArray(rawJson)) return;
@@ -4494,7 +4646,7 @@
                 const id = Date.now().toString() + Math.random().toString(36).substr(2, 9);
                 if (item.imageUrl && String(item.imageUrl).startsWith('data:')) {
                     try {
-                        await saveImageToIDB(id, item.imageUrl);
+                        item.imageUrl = await persistEmbeddedImageForState(id, item.imageUrl);
                     } catch (_) {
                         skippedInvalid++;
                         imagePersistFailed++;
