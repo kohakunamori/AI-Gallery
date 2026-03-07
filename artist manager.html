@@ -4817,6 +4817,7 @@
             const sourceLabel = String(options.sourceLabel || '远端备份').trim() || '远端备份';
             const importList = normalizeArtistList(resolved.artists || []);
             const localList = normalizeArtistList(state.liveArtists || []);
+            const trackedLocalImageIds = readTrackedLocalImageIds();
 
             const normalizeTagKey = (tag) => String(tag || '').trim().toLowerCase();
             const localByTag = new Map();
@@ -4838,6 +4839,15 @@
                 if (removalDecision !== 'continue') throw new Error('已取消覆盖同步');
             }
 
+            const localOnlyArtists = localList.filter((artist) => {
+                const key = normalizeTagKey(artist?.tag);
+                return key && !remoteTagSet.has(key);
+            });
+            for (const artist of localOnlyArtists) {
+                await deleteImageFromIDB(artist.id);
+                revokeObjectUrlIfNeeded(artist.imageUrl);
+            }
+
             const nextArtists = [];
             const importedCategories = new Set(normalizeCategoryList(resolved.categories));
             let addedCount = 0;
@@ -4857,6 +4867,7 @@
                 const localExisting = localByTag.get(tagKey) || null;
                 const category = normalizeCategoryName(item.category);
                 if (category) importedCategories.add(category);
+                const previousImageUrl = String(localExisting?.imageUrl || '');
 
                 const remoteCandidate = normalizeArtistRecord({
                     ...(localExisting || {}),
@@ -4907,10 +4918,19 @@
 
                 if (remoteCandidate.imageUrl && String(remoteCandidate.imageUrl).startsWith('data:')) {
                     try {
-                        await saveImageToIDB(remoteCandidate.id, remoteCandidate.imageUrl);
+                        remoteCandidate.imageUrl = await persistEmbeddedImageForState(remoteCandidate.id, remoteCandidate.imageUrl);
+                        item.imageUrl = '';
                     } catch (_) {
+                        remoteCandidate.imageUrl = previousImageUrl || '';
                         imagePersistFailed++;
                     }
+                }
+
+                if (localExisting && previousImageUrl !== remoteCandidate.imageUrl) {
+                    if (shouldRemoveTrackedLocalImage(localExisting, remoteCandidate.imageUrl, trackedLocalImageIds)) {
+                        await deleteImageFromIDB(localExisting.id);
+                    }
+                    revokeObjectUrlIfNeeded(previousImageUrl);
                 }
 
                 nextArtists.push(remoteCandidate);
@@ -5162,11 +5182,20 @@
 
         const XHR_TIMEOUT_MS = 180000;
 
-        const executeXhrRequest = ({ method, url, headers = {}, body = null, onUploadProgress, onDownloadProgress }) => {
+        const executeXhrRequest = ({ method, url, headers = {}, body = null, responseType = 'text', maxDownloadBytes = 0, responseLabel = '响应', onUploadProgress, onDownloadProgress }) => {
             return new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
+                let hasRejectedForSize = false;
+                const abortForOversizedPayload = (bytesValue) => {
+                    const bytes = Math.max(0, Number(bytesValue) || 0);
+                    if (hasRejectedForSize || bytes <= 0 || bytes <= maxDownloadBytes) return false;
+                    hasRejectedForSize = true;
+                    xhr.abort();
+                    rejectOversizedDownload(responseLabel, bytes);
+                    return true;
+                };
                 xhr.open(method, url, true);
-                xhr.responseType = 'text';
+                xhr.responseType = responseType === 'blob' ? 'blob' : 'text';
                 xhr.withCredentials = false;
                 xhr.timeout = XHR_TIMEOUT_MS;
 
@@ -5189,17 +5218,34 @@
                             const parsed = Number(headerVal);
                             if (Number.isFinite(parsed) && parsed > 0) totalHint = parsed;
                         }
+                        if (abortForOversizedPayload(event?.total || totalHint || 0)) return;
                         onDownloadProgress(buildTransferProgress(event, totalHint));
                     };
                 }
 
+                xhr.onreadystatechange = () => {
+                    if (xhr.readyState < 2 || hasRejectedForSize || maxDownloadBytes <= 0) return;
+                    const headerVal = xhr.getResponseHeader('Content-Length') || xhr.getResponseHeader('content-length') || '';
+                    const parsed = Number(headerVal);
+                    if (Number.isFinite(parsed) && parsed > 0) abortForOversizedPayload(parsed);
+                };
+
                 xhr.onerror = () => reject(new Error('网络请求失败'));
-                xhr.onabort = () => reject(new Error('请求被取消'));
+                xhr.onabort = () => {
+                    if (!hasRejectedForSize) reject(new Error('请求被取消'));
+                };
                 xhr.ontimeout = () => reject(new Error('网络请求超时'));
                 xhr.onload = () => {
-                    const responseText = String(xhr.responseText || '');
+                    if (hasRejectedForSize) return;
                     const status = Number(xhr.status) || 0;
-                    resolve({ status, ok: status >= 200 && status < 300, responseText });
+                    resolve({
+                        status,
+                        ok: status >= 200 && status < 300,
+                        responseText: xhr.responseType === 'blob' ? '' : String(xhr.responseText || ''),
+                        responseBlob: xhr.responseType === 'blob'
+                            ? (xhr.response instanceof Blob ? xhr.response : new Blob([xhr.response || '']))
+                            : null
+                    });
                 };
 
                 xhr.send(body === undefined ? null : body);
@@ -5242,16 +5288,22 @@
             const cfg = normalizeWebdavConfig(webdavConfigInput || {});
             const targetUrl = resolveWebdavTargetUrl(cfg);
             if (!targetUrl) throw new Error('请先配置 WebDAV 地址和文件路径');
+            const importBudget = getImportSizeSafetyBudget('WebDAV 备份');
             const response = await executeXhrRequest({
                 method: 'GET',
                 url: targetUrl,
+                responseType: 'blob',
+                maxDownloadBytes: importBudget.hardBytes,
+                responseLabel: 'WebDAV 备份',
                 headers: getWebdavHeaders(cfg, { Accept: 'application/json' }),
                 onDownloadProgress: (progress) => {
                     if (typeof onProgress === 'function') onProgress(progress);
                 }
             });
-            if (!response.ok) throw buildStorageTextError('WebDAV 拉取失败', response.status, response.responseText);
-            return parseJsonOrThrow(response.responseText || '{}', 'WebDAV 响应');
+            if (!response.ok) {
+                throw buildStorageTextError('WebDAV 拉取失败', response.status, await readBlobAsText(response.responseBlob));
+            }
+            return response.responseBlob || new Blob(['{}'], { type: 'application/json' });
         };
 
         const s3Upload = async (s3ConfigInput = state.s3Config, onProgress = null) => {
@@ -5300,33 +5352,40 @@
             const cfg = normalizeS3Config(s3ConfigInput || {});
             const requestInfo = buildS3RequestInfo(cfg);
             if (!requestInfo) throw new Error('请完善 S3 endpoint/bucket/objectKey');
+            const importBudget = getImportSizeSafetyBudget('S3 备份');
             let headers = await signS3Request({ method: 'GET', requestInfo, payload: '' });
             let response = await executeXhrRequest({
                 method: 'GET',
                 url: requestInfo.url,
+                responseType: 'blob',
+                maxDownloadBytes: importBudget.hardBytes,
+                responseLabel: 'S3 备份',
                 headers,
                 onDownloadProgress: (progress) => {
                     if (typeof onProgress === 'function') onProgress(progress);
                 }
             });
             if (!response.ok) {
-                const responseText = String(response.responseText || '');
+                const responseText = await readBlobAsText(response.responseBlob);
                 if (shouldRetryR2WithUsEast1(cfg, responseText, response.status)) {
                     const retryInfo = { ...requestInfo, region: 'us-east-1' };
                     headers = await signS3Request({ method: 'GET', requestInfo: retryInfo, payload: '' });
                     response = await executeXhrRequest({
                         method: 'GET',
                         url: retryInfo.url,
+                        responseType: 'blob',
+                        maxDownloadBytes: importBudget.hardBytes,
+                        responseLabel: 'S3 备份',
                         headers,
                         onDownloadProgress: (progress) => {
                             if (typeof onProgress === 'function') onProgress(progress);
                         }
                     });
-                    if (response.ok) return parseJsonOrThrow(response.responseText || '{}', 'S3 响应');
+                    if (response.ok) return response.responseBlob || new Blob(['{}'], { type: 'application/json' });
                 }
-                throw buildStorageTextError('S3 拉取失败', response.status, response.responseText || '');
+                throw buildStorageTextError('S3 拉取失败', response.status, responseText || '');
             }
-            return parseJsonOrThrow(response.responseText || '{}', 'S3 响应');
+            return response.responseBlob || new Blob(['{}'], { type: 'application/json' });
         };
 
         window.closeSyncModal = () => {
@@ -5520,12 +5579,15 @@
                         updateSyncProgress(estimatedPercent, downloadLabel);
                     }
                 };
-                const rawJson = draft.syncMethod === 's3'
+                const rawBlob = draft.syncMethod === 's3'
                     ? await s3Download(draft.s3Config, downloadProgressHandler)
                     : await webdavDownload(draft.webdavConfig, downloadProgressHandler);
+                ensureImportByteSizeSafe(Number(rawBlob?.size || 0), `${channel} 备份`);
                 updateSyncProgress(55, '数据拉取成功，正在解析...');
+                const rawJson = parseJsonOrThrow(await readBlobAsText(rawBlob), `${channel} 备份`, Number(rawBlob?.size || 0));
                 ensureImportMetadataSafe(rawJson);
                 const resolved = resolveImportPayload(rawJson);
+                ensureImportPayloadSafe(resolved);
                 updateSyncProgress(74, '解析完成，正在按远端覆盖本地...');
                 const overwriteResult = await overwriteImportResolvedPayload(resolved, { sourceLabel: `${channel} 备份` });
                 showToast(buildMergeSummary(`从 ${channel} 拉取（覆盖模式）`, overwriteResult));
@@ -5547,14 +5609,21 @@
         window.handleImport = (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            try {
+                ensureImportFileSizeSafe(file, '导入文件');
+            } catch (err) {
+                toastFailure('导入失败', err, { silentCancel: true, fallback: '格式错误' });
+                e.target.value = '';
+                return;
+            }
             const reader = new FileReader();
             reader.onload = async (ev) => {
                 try {
-                    ensureImportFileSizeSafe(file, '导入文件');
                     const rawText = String(ev?.target?.result || '').trim();
-                    const rawJson = parseJsonOrThrow(rawText, '导入文件');
+                    const rawJson = parseJsonOrThrow(rawText, '导入文件', Number(file?.size || 0));
                     ensureImportMetadataSafe(rawJson);
                     const resolved = resolveImportPayload(rawJson);
+                    ensureImportPayloadSafe(resolved);
                     const overwriteResult = await overwriteImportResolvedPayload(resolved, { sourceLabel: '导入备份' });
                     showToast(buildMergeSummary('导入本地备份（覆盖模式）', overwriteResult));
                 } catch (err) {
@@ -5678,22 +5747,24 @@
             const isEdit = !!state.editingArtist;
             const id = isEdit ? state.editingArtist.id : Date.now().toString();
             const previousArtist = isEdit ? state.liveArtists.find((a) => a.id === id) : null;
+            const trackedLocalImageIds = readTrackedLocalImageIds();
+            let runtimeImageUrl = imageUrl;
             if (imageUrl && imageUrl.startsWith('data:')) {
                 try {
-                    await saveImageToIDB(id, imageUrl);
+                    runtimeImageUrl = await persistEmbeddedImageForState(id, imageUrl);
                 } catch (error) {
                     showToast(`图片本地存储失败: ${String(error?.message || '未知错误')}`);
                     return;
                 }
             }
-            else if (isEdit && !imageUrl) await deleteImageFromIDB(id);
-            if (isEdit && previousArtist && previousArtist.imageUrl !== imageUrl) {
+            else if (isEdit && shouldRemoveTrackedLocalImage(previousArtist, imageUrl, trackedLocalImageIds)) await deleteImageFromIDB(id);
+            if (isEdit && previousArtist && previousArtist.imageUrl !== runtimeImageUrl) {
                 revokeObjectUrlIfNeeded(previousArtist.imageUrl);
             }
             const normalizedCategory = normalizeCategoryName(category);
             
             const artistData = {
-                id, name: name || tag, tag: tag.trim(), imageUrl: imageUrl, 
+                id, name: name || tag, tag: tag.trim(), imageUrl: runtimeImageUrl,
                 category: normalizedCategory,
                 danbooruCount: parseInt(danbooruCount) || 0,
                 isNSFW: !!isNSFW,
@@ -5829,6 +5900,28 @@
             }
             const ok = await copyTextToClipboard(JSON.stringify(state.comfyWorkflowData, null, 2));
             showToast(ok ? '工作流 JSON 已复制' : '复制失败，请手动复制', { scope: 'overlay' });
+        };
+        window.downloadComfyWorkflowJson = () => {
+            if (!state.comfyWorkflowData) {
+                showToast('当前没有可下载的工作流', { scope: 'overlay' });
+                return;
+            }
+
+            const json = JSON.stringify(state.comfyWorkflowData, null, 2);
+            const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = 'comfyui-workflow.json';
+            document.body.appendChild(link);
+
+            try {
+                link.click();
+                showToast('工作流 JSON 已下载', { scope: 'overlay' });
+            } finally {
+                document.body.removeChild(link);
+                URL.revokeObjectURL(objectUrl);
+            }
         };
         window.closeNoteViewer = () => updateState({ viewingNote: null });
         window.closeLoraViewer = () => updateState({ viewingLora: null });
@@ -7527,6 +7620,7 @@
                             <p class="text-xs text-slate-400 dark:text-slate-500 mb-4">从图片元数据中提取的完整工作流 JSON</p>
                             <div class="flex gap-2 mb-3">
                                 <button onclick="copyComfyWorkflowJson()" class="btn-icon liquid-action px-3 py-1.5 rounded-xl text-xs font-bold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-900/30 border border-violet-200 dark:border-violet-800/50 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition-colors flex items-center gap-1.5"><i data-lucide="copy" class="w-3.5 h-3.5"></i>复制 JSON</button>
+                                <button onclick="downloadComfyWorkflowJson()" class="btn-icon liquid-action px-3 py-1.5 rounded-xl text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors flex items-center gap-1.5"><i data-lucide="download" class="w-3.5 h-3.5"></i>下载 JSON</button>
                             </div>
                             <div class="flex-1 min-h-0 overflow-auto custom-scrollbar bg-slate-50/80 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 p-4">
                                 <pre class="text-xs font-mono text-slate-700 dark:text-slate-300 whitespace-pre leading-relaxed">${escapedJson}</pre>
@@ -7559,10 +7653,12 @@
             applyAdaptiveInterfaceMode();
             updateState({ isDataLoading: true });
             applyTheme();
+            requestPersistentImageStorage().catch(() => false);
             try {
                 const savedMeta = localStorage.getItem(METADATA_KEY);
                 const parsedMeta = savedMeta ? JSON.parse(savedMeta) : INITIAL_DATA;
                 const imgMap = await getAllImagesFromIDB().catch(() => ({}));
+                const trackedLocalImageIds = readTrackedLocalImageIds();
                 const merged = normalizeArtistList(parsedMeta).map(a => ({
                     ...a,
                     imageUrl: imgMap[a.id] || a.imageUrl || ''
@@ -7571,6 +7667,9 @@
                 const savedCategories = normalizeCategoryList(savedCategoriesRaw);
                 const categories = normalizeCategoryList([...savedCategories, ...buildKnownCategoriesFromArtists(merged)]);
                 updateState({ liveArtists: merged, categories, activeCategory: 'uncategorized', isDataLoading: false });
+                if (shouldWarnAboutMissingImageLibrary(parsedMeta, imgMap, trackedLocalImageIds)) {
+                    showToast('若你之前上传过本地配图而现在全部消失，通常是当前站点的图片库（IndexedDB）已丢失；记录仍会保留在本地。可从同步备份拉取或重新导入包含图片的导出 JSON。');
+                }
             } catch (e) {
                 const fallbackArtists = normalizeArtistList(INITIAL_DATA);
                 const fallbackCategories = buildKnownCategoriesFromArtists(fallbackArtists);
